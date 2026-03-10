@@ -62,11 +62,12 @@ async def generate_suggestions(
   sys_prompt = (
     "You are a fashion assistant. Look at the image and provide 15 actionable outfit improvement suggestions. "
     "Return ONLY a valid JSON array with up to 15 objects. "
-    "Each object must be: {\"title\": \"<=8 words\", \"type\": \"fit|layering|color|accessory|other\", "
-    "\"description\": \"<=25 words\", and it must be a specific suggestion, not a description. "
     "All items must be unique and non-redundant. Do not repeat the same idea or wording. "
     "Use varied verbs and phrasing; avoid repeating sentence patterns. "
     "Be creative within what is visible; suggest distinct angles (fit, proportions, texture, contrast, silhouette, accessories). "
+    "Each object must be: {\"title\": \"<=8 words\", \"type\": \"fit|layering|color|accessory|other\", "
+    "\"description\": \"<=25 words\", and it must be a specific suggestion, not a description. "
+  
     "Do NOT use score category names as titles (no 'Color Match', 'Fit Quality', 'Trend Score', etc). "
     "Do NOT use types outside the allowed list. "
     "Ground every tip in what is visible; do NOT invent garments. "
