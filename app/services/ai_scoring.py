@@ -40,6 +40,48 @@ def _clamp(score: float) -> float:
   return round(max(0.0, min(10.0, score)), 1)
 
 
+def _normalize_score(raw_score: float) -> float:
+  # Fast fix: stretch distribution to reduce inflated mid/high scores.
+  adjusted = (raw_score - 7.0) * 1.8 + 5.0
+  return _clamp(adjusted)
+
+
+def _apply_noise(score: float) -> float:
+  return _clamp(score + random.uniform(-0.4, 0.4))
+
+
+def _label_to_score(label: str) -> float:
+  mapping = {
+    "bad": 2.0,
+    "poor": 3.5,
+    "average": 5.8,
+    "good": 7.8,
+    "excellent": 9.2,
+  }
+  return mapping.get(label.strip().lower(), 5.0)
+
+
+def _apply_penalties(scores: dict, penalties: dict) -> dict:
+  # penalties is expected to be booleans, e.g. {"excessive_monochrome": true, ...}
+  trend_penalty = 0.0
+  color_penalty = 0.0
+  cohesion_penalty = 0.0
+  if penalties.get("excessive_monochrome") and penalties.get("neon_colors"):
+    trend_penalty -= 2.0
+  if penalties.get("clashing_patterns"):
+    color_penalty -= 1.5
+    cohesion_penalty -= 1.0
+  if penalties.get("costume_like"):
+    trend_penalty -= 1.5
+    cohesion_penalty -= 1.5
+  if penalties.get("poor_layering"):
+    cohesion_penalty -= 1.0
+  scores["trend_score"] = _clamp(scores["trend_score"] + trend_penalty)
+  scores["color_match"] = _clamp(scores["color_match"] + color_penalty)
+  scores["style_match"] = _clamp(scores["style_match"] + cohesion_penalty)
+  return scores
+
+
 def _compute_color_metrics(image_bytes: bytes) -> dict:
   try:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -323,22 +365,34 @@ async def _text_embeddings(prompt: str) -> Sequence[float]:
 
 async def _vlm_breakdown(
   image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
-) -> ScoreBreakdown | None:
-  """Ask the VLM for grounded numeric scores; return None on failure."""
+) -> tuple[ScoreBreakdown, str] | None:
+  """Ask the VLM for qualitative labels + penalties; convert to scores."""
   if not settings.replicate_api_token:
     return None
   model_ref = settings.replicate_vlm_model or VLM_MODEL_REF_DEFAULT
 
   sys_prompt = (
-    "You are a fashion rater. Look at the image and output ONLY JSON with numeric scores (0-10, one decimal, not just .0/.5): "
-    "{color_match, fit_quality, body_compatibility, trend_score, style_match}.\n\n"
-    "Instructions for scoring:\n"
+    "You are a fashion rater. Look at the image and output ONLY JSON with qualitative labels and penalties:\n"
+    "{"
+    "\"color_balance\": \"bad|poor|average|good|excellent\","
+    "\"silhouette_fit\": \"bad|poor|average|good|excellent\","
+    "\"outfit_cohesion\": \"bad|poor|average|good|excellent\","
+    "\"trend_alignment\": \"bad|poor|average|good|excellent\","
+    "\"originality\": \"bad|poor|average|good|excellent\","
+    "\"penalties\": {"
+    "\"excessive_monochrome\": true|false,"
+    "\"neon_colors\": true|false,"
+    "\"clashing_patterns\": true|false,"
+    "\"costume_like\": true|false,"
+    "\"poor_layering\": true|false"
+    "}"
+    "}.\n\n"
+    "Rules:\n"
     "- Base ratings on how well the outfit fits the user's personal style and body, not just general trends.\n"
-    "- Give higher weight to fit_quality and body_compatibility (athletic build focus).\n"
-    "- Color_match should reflect harmony, contrast, and luxury feel.\n"
-    "- Trend_score counts, but do not harshly penalize stylish non-hype looks.\n"
-    "- Style_match = alignment with user's preferred style/inspirations (luxury/custom).\n"
-    "Score ranges: bad=0-2, poor=2-4, average=4-6, good=6-8, excellent=8-10.\n"
+    "- Give higher weight to fit and cohesion (athletic build focus).\n"
+    "- Color_balance reflects harmony, contrast, and luxury feel.\n"
+    "- Trend_alignment counts, but do not harshly penalize stylish non-hype looks.\n"
+    "- Originality reflects uniqueness without being costume-like.\n"
     "Output only JSON. No explanations, no extra text, no markdown."
   )
   user_prompt = (
@@ -382,19 +436,25 @@ async def _vlm_breakdown(
       raw = raw[raw.find("{") : raw.rfind("}") + 1]
     raw = raw.replace("\\_", "_").strip()
     data = json.loads(raw)
-    def pick(name):
-      val = float(data.get(name))
-      frac = val - int(val)
-      if frac in (0.0, 0.5):
-        val = max(0.0, min(10.0, val + random.uniform(-0.25, 0.25)))
-      return round(val, 1)
+    penalties = data.get("penalties") or {}
+    # Map new structure to existing fields
+    scores = {
+      "color_match": _label_to_score(data.get("color_balance", "average")),
+      "fit_quality": _label_to_score(data.get("silhouette_fit", "average")),
+      "body_compatibility": _label_to_score(data.get("silhouette_fit", "average")),
+      "trend_score": _label_to_score(data.get("trend_alignment", "average")),
+      "style_match": _label_to_score(data.get("outfit_cohesion", "average")),
+    }
+    scores = _apply_penalties(scores, penalties)
+    # Add slight noise without normalization for label-based scores
+    scores = {k: _apply_noise(v) for k, v in scores.items()}
     return ScoreBreakdown(
-      color_match=_clamp(pick("color_match")),
-      fit_quality=_clamp(pick("fit_quality")),
-      body_compatibility=_clamp(pick("body_compatibility")),
-      trend_score=_clamp(pick("trend_score")),
-      style_match=_clamp(pick("style_match")),
-    )
+      color_match=scores["color_match"],
+      fit_quality=scores["fit_quality"],
+      body_compatibility=scores["body_compatibility"],
+      trend_score=scores["trend_score"],
+      style_match=scores["style_match"],
+    ), "labels"
   except Exception as exc:
     logger.error(f"VLM scoring failed; raw='{raw[:400] if 'raw' in locals() else ''}' err={exc}")
     raise HTTPException(
@@ -485,9 +545,11 @@ async def score_with_ai(
 
   # Try VLM for grounded numeric scores first (if configured)
   breakdown = None
+  breakdown_mode = "numeric"
   if settings.replicate_vlm_model:
-    breakdown = await _vlm_breakdown(image_bytes, user_ctx, image_url)
-    if breakdown:
+    res = await _vlm_breakdown(image_bytes, user_ctx, image_url)
+    if res:
+      breakdown, breakdown_mode = res
       logger.info("score pipeline: using VLM breakdown (model=%s)", settings.replicate_vlm_model)
   top_sim = 0.0
   top_prompt = None
@@ -531,12 +593,16 @@ async def score_with_ai(
     0.30 * breakdown.color_match
     + 0.20 * breakdown.fit_quality
     + 0.20 * breakdown.body_compatibility
-    + 0.15 * breakdown.trend_score
-    + 0.15 * breakdown.style_match
+    + 0.10 * breakdown.trend_score
+    + 0.20 * breakdown.style_match
   )
+  if breakdown_mode == "numeric":
+    drip_score = _apply_noise(_normalize_score(drip_score))
+  else:
+    drip_score = _apply_noise(drip_score)
 
   # LLM suggestions (no heuristic fallback; propagate errors)
-  suggestions = await generate_suggestions(breakdown, user_ctx, image_bytes, image_url)
+  suggestions, summary = await generate_suggestions(breakdown, user_ctx, image_bytes, image_url)
   if not suggestions:
     raise HTTPException(
       status_code=status.HTTP_502_BAD_GATEWAY,
@@ -546,6 +612,8 @@ async def score_with_ai(
   # No suggestions fallback; any errors would have raised above
 
   warnings = []
+  if summary:
+    warnings.append(summary)
   if mask_cov is not None and mask_cov < 0.1:
     warnings.append("Full body not fully visible; results may be less accurate.")
   if color_metrics["brightness"] < 0.35:
@@ -589,19 +657,20 @@ def fake_score(user_styles: List[str]) -> ScoreResponse:
     return round(random.uniform(6.0, 9.5), 1)
 
   breakdown = ScoreBreakdown(
-    color_match=rand(),
-    fit_quality=rand(),
-    body_compatibility=rand(),
-    trend_score=rand(),
-    style_match=rand(),
+    color_match=_apply_noise(_normalize_score(rand())),
+    fit_quality=_apply_noise(_normalize_score(rand())),
+    body_compatibility=_apply_noise(_normalize_score(rand())),
+    trend_score=_apply_noise(_normalize_score(rand())),
+    style_match=_apply_noise(_normalize_score(rand())),
   )
   drip_score = _clamp(
     0.30 * breakdown.color_match
     + 0.20 * breakdown.fit_quality
     + 0.20 * breakdown.body_compatibility
-    + 0.15 * breakdown.trend_score
-    + 0.15 * breakdown.style_match
+    + 0.10 * breakdown.trend_score
+    + 0.20 * breakdown.style_match
   )
+  drip_score = _apply_noise(_normalize_score(drip_score))
   suggestions = [
     SuggestionCard(
       title="Fix lighting",

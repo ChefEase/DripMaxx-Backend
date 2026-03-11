@@ -1,7 +1,8 @@
 import json
 import io
 import time
-from typing import List
+import re
+from typing import List, Tuple, Dict, Any
 
 import replicate
 from fastapi import HTTPException
@@ -14,45 +15,52 @@ from app.schemas.outfits import ScoreBreakdown, SuggestionCard, UserContext
 settings = get_settings()
 
 
-def _parse_suggestions(raw: str) -> List[SuggestionCard]:
+def _parse_detection(raw: str) -> Dict[str, Any]:
   text = raw.strip()
-  if "[" in text and "]" in text:
-    text = text[text.index("[") : text.rindex("]") + 1]
+  if "{" in text and "}" in text:
+    text = text[text.index("{") : text.rindex("}") + 1]
   text = text.replace("\\_", "_").strip()
   try:
     data = json.loads(text)
+    if isinstance(data, dict):
+      return data
   except Exception:
-    data = None
-    import re
-    # Fallback: extract repeating title/type/description triples even if braces are broken
-    titles = re.findall(r'"title"\s*:\s*"([^"]+)"', text)
-    types = re.findall(r'"type"\s*:\s*"([^"]+)"', text)
-    descs = re.findall(r'"description"\s*:\s*"([^"]+)"', text)
-    items = []
-    for idx, title in enumerate(titles):
-      desc = descs[idx] if idx < len(descs) else ""
-      typ = types[idx] if idx < len(types) else "other"
-      items.append({"title": title, "type": typ, "description": desc})
-    if items:
-      data = items
+    pass
+  return {}
 
-  cards: List[SuggestionCard] = []
-  if isinstance(data, list):
-    for item in data[:15]:
-      if not isinstance(item, dict):
-        continue
-      title = (item.get("title") or "").strip()
-      desc = (item.get("description") or item.get("desc") or item.get("suggestion") or "").strip()
-      type_tag = (item.get("type") or item.get("category") or "other").strip()
-      if title and desc:
-        cards.append(SuggestionCard(title=title, type=type_tag, description=desc))
-  return cards
+
+def _tokenize(s: str) -> set:
+  return set(re.findall(r"[a-z0-9]+", s.lower()))
+
+
+def _too_similar(a: str, b: str) -> bool:
+  ta = _tokenize(a)
+  tb = _tokenize(b)
+  if not ta or not tb:
+    return False
+  overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+  return overlap > 0.85
+
+
+def _safe_summary_from_scores(breakdown: ScoreBreakdown) -> str:
+  parts = []
+  if breakdown.fit_quality < 6 or breakdown.body_compatibility < 6:
+    parts.append("fit could be stronger")
+  if breakdown.color_match < 6:
+    parts.append("color balance lacks contrast")
+  if breakdown.trend_score < 5.5:
+    parts.append("trend alignment is a bit behind")
+  if breakdown.style_match < 6:
+    parts.append("overall cohesion needs polish")
+  if not parts:
+    parts.append("overall fit and balance are solid")
+  return "Summary: " + ", ".join(parts) + "."
 
 
 async def generate_suggestions(
   breakdown: ScoreBreakdown, user_ctx: UserContext, image_bytes: bytes, image_url: str | None = None
-) -> List[SuggestionCard]:
-  """Use a vision-language model (VLM) to generate grounded suggestions from the actual image."""
+) -> Tuple[List[SuggestionCard], str | None]:
+  """Detect items/problems via VLM, then generate 5 templated suggestions."""
   if not settings.replicate_api_token:
     raise HTTPException(
       status_code=503,
@@ -60,19 +68,17 @@ async def generate_suggestions(
     )
 
   sys_prompt = (
-    "You are a fashion assistant. Look at the image and provide 15 actionable outfit improvement suggestions. "
-    "Return ONLY a valid JSON array with up to 15 objects. "
-    "All items must be unique and non-redundant. Do not repeat the same idea or wording. "
-    "Use varied verbs and phrasing; avoid repeating sentence patterns. "
-    "Be creative within what is visible; suggest distinct angles (fit, proportions, texture, contrast, silhouette, accessories). "
-    "Each object must be: {\"title\": \"<=8 words\", \"type\": \"fit|layering|color|accessory|other\", "
-    "\"description\": \"<=25 words\", and it must be a specific suggestion, not a description. "
-  
-    "Do NOT use score category names as titles (no 'Color Match', 'Fit Quality', 'Trend Score', etc). "
-    "Do NOT use types outside the allowed list. "
-    "Ground every tip in what is visible; do NOT invent garments. "
-    "Do NOT output captions, summaries, or image descriptions. Suggestions only. "
-    "No extra text, no markdown, no trailing commas."
+    "Look at the image and output ONLY JSON with detected items, problems, and a short summary:\n"
+    "{"
+    "\"detected_items\": [\"shirt\",\"pants\",\"shoes\",\"jacket\",\"hat\",\"belt\",\"dress\",\"skirt\",\"boots\",\"sneakers\",\"hoodie\",\"coat\",\"bag\",\"jewelry\"],"
+    "\"problems_detected\": [\"monochrome_color\",\"lack_of_layers\",\"clashing_patterns\",\"poor_fit\",\"low_trend\",\"low_cohesion\"],"
+    "\"summary\": \"one sentence\""
+    "}\n"
+    "Rules:\n"
+    "- Only list items that are clearly visible.\n"
+    "- problems_detected can be empty.\n"
+    "- Summary must be one sentence about fit/color/overall balance.\n"
+    "Output only JSON."
   )
   user_prompt = (
     f"User style prefs: {', '.join(user_ctx.style_preferences) or 'unspecified'}; "
@@ -83,7 +89,7 @@ async def generate_suggestions(
     f"color_match={breakdown.color_match}, fit_quality={breakdown.fit_quality}, "
     f"body_compatibility={breakdown.body_compatibility}, trend_score={breakdown.trend_score}, "
     f"style_match={breakdown.style_match}. "
-    "Output JSON array only."
+    "Output JSON only."
   )
 
   def _call_vlm(prompt: str, temperature: float):
@@ -104,8 +110,8 @@ async def generate_suggestions(
             "image": image_input,
             "prompt": prompt,
             "temperature": temperature,
-            "top_p": 0.95,
-            "max_tokens": 1200,
+            "top_p": 0.9,
+            "max_tokens": 800,
           },
         )
         break
@@ -121,35 +127,86 @@ async def generate_suggestions(
     return str(result)
 
   base_prompt = sys_prompt + "\n\n" + user_prompt
-  raw = await run_in_threadpool(lambda: _call_vlm(base_prompt, 0.8))
-  cards = _parse_suggestions(raw)
-  # post-filter: normalize types, cap 15 (do not dedupe to avoid shrinking output)
-  normalized = []
-  allowed_types = {"fit", "layering", "color", "accessory", "other"}
-  for c in cards:
-    c.type = c.type.lower()
-    if c.type not in allowed_types:
-      c.type = "other"
-    normalized.append(c)
-  cards = normalized[:15]
+  raw = await run_in_threadpool(lambda: _call_vlm(base_prompt, 0.2))
+  detection = _parse_detection(raw)
+  detected_items = set(i.lower() for i in (detection.get("detected_items") or []) if isinstance(i, str))
+  problems = set(p.lower() for p in (detection.get("problems_detected") or []) if isinstance(p, str))
+  summary = detection.get("summary")
+  if not isinstance(summary, str) or len(summary.strip()) < 5:
+    summary = _safe_summary_from_scores(breakdown)
+  else:
+    summary = "Summary: " + summary.strip()
 
-  # Reject repeated ideas (title + description) to enforce uniqueness.
-  seen = set()
-  unique_cards = []
-  for c in cards:
-    key = (c.title.strip().lower(), c.description.strip().lower())
-    if key in seen:
+  def has_item(*names: str) -> bool:
+    return any(n in detected_items for n in names)
+
+  blocked_items = {"belt", "tie", "hat", "socks", "jacket", "coat", "overshirt"}
+
+  candidates = []
+  if breakdown.color_match < 6 or "monochrome_color" in problems:
+    candidates.append(("color", "Add color contrast", "Introduce a second color to break the monochrome look.", "overall"))
+  if breakdown.fit_quality < 6 or "poor_fit" in problems:
+    candidates.append(("fit", "Refine the fit", "Adjust proportions with a cleaner fit on top or bottom.", "overall"))
+  if breakdown.trend_score < 5.5 or "low_trend" in problems:
+    candidates.append(("other", "Modernize one piece", "Swap one item for a more current silhouette or finish.", "overall"))
+  if breakdown.style_match < 6 or "low_cohesion" in problems:
+    candidates.append(("layering", "Improve cohesion", "Use a cohesive layer or texture to unify the outfit.", "overall"))
+
+  if ("lack_of_layers" in problems) and has_item("jacket", "coat", "hoodie", "overshirt"):
+    candidates.append(("layering", "Add a clean layer", "A light outer layer can add depth without clutter.", "upper"))
+
+  if has_item("jewelry", "bag"):
+    candidates.append(("accessory", "Elevate with accessories", "Lean into visible accessories for a more finished look.", "overall"))
+
+  if has_item("shoes", "boots", "sneakers"):
+    candidates.append(("fit", "Upgrade footwear texture", "Choose a more textured shoe to add visual interest.", "lower"))
+
+  candidates.append(("fit", "Balance proportions", "Keep top and bottom volumes balanced for a cleaner silhouette.", "overall"))
+  candidates.append(("color", "Tighten the palette", "Limit to one accent color for a more polished look.", "overall"))
+
+  filtered = []
+  for t, title, desc, area in candidates:
+    lower = f"{title} {desc}".lower()
+    if any(b in lower for b in blocked_items) and not has_item("jacket", "coat", "overshirt", "hat", "belt", "tie", "socks"):
       continue
-    seen.add(key)
-    unique_cards.append(c)
-  cards = unique_cards
+    filtered.append((t, title, desc, area))
 
-  if not cards:
+  ordered = []
+  used_areas = set()
+  for t, title, desc, area in filtered:
+    if area not in used_areas:
+      ordered.append((t, title, desc, area))
+      used_areas.add(area)
+    if len(ordered) >= 3:
+      break
+  for t, title, desc, area in filtered:
+    if len(ordered) >= 5:
+      break
+    ordered.append((t, title, desc, area))
+
+  final = []
+  for t, title, desc, area in ordered:
+    text = f"{title} {desc}"
+    if any(_too_similar(text, f"{c.title} {c.description}") for c in final):
+      continue
+    final.append(SuggestionCard(title=title, type=t, description=desc))
+    if len(final) >= 5:
+      break
+
+  if not final:
     logger.error(f"VLM suggestion parse failed; raw='{raw[:800]}'")
     raise HTTPException(
       status_code=502,
       detail="LLM suggestions unavailable; please retry shortly.",
     )
 
-  logger.debug(f"VLM suggestions parsed {len(cards)} items")
-  return cards
+  formatted = []
+  for idx, card in enumerate(final, start=1):
+    if idx <= 3:
+      card.title = f"Top Fix {idx}: {card.title}"
+    else:
+      card.title = f"Optional {idx}: {card.title}"
+    formatted.append(card)
+
+  logger.debug(f"VLM suggestions templated {len(formatted)} items")
+  return formatted, summary
