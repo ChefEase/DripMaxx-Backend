@@ -76,10 +76,22 @@ def _apply_penalties(scores: dict, penalties: dict) -> dict:
     cohesion_penalty -= 1.5
   if penalties.get("poor_layering"):
     cohesion_penalty -= 1.0
+  if penalties.get("too_many_colors"):
+    color_penalty -= 1.0
   scores["trend_score"] = _clamp(scores["trend_score"] + trend_penalty)
   scores["color_match"] = _clamp(scores["color_match"] + color_penalty)
   scores["style_match"] = _clamp(scores["style_match"] + cohesion_penalty)
   return scores
+
+
+def _quality_tier(overall: float) -> str:
+  if overall >= 9.0:
+    return "Top_Notch"
+  if overall >= 7.0:
+    return "Good"
+  if overall >= 5.0:
+    return "Mid"
+  return "Bad"
 
 
 def _compute_color_metrics(image_bytes: bytes) -> dict:
@@ -365,7 +377,7 @@ async def _text_embeddings(prompt: str) -> Sequence[float]:
 
 async def _vlm_breakdown(
   image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
-) -> tuple[ScoreBreakdown, str] | None:
+) -> tuple[ScoreBreakdown, str, dict] | None:
   """Ask the VLM for qualitative labels + penalties; convert to scores."""
   if not settings.replicate_api_token:
     return None
@@ -384,7 +396,9 @@ async def _vlm_breakdown(
     "\"neon_colors\": true|false,"
     "\"clashing_patterns\": true|false,"
     "\"costume_like\": true|false,"
-    "\"poor_layering\": true|false"
+    "\"poor_layering\": true|false,"
+    "\"too_many_colors\": true|false,"
+    "\"simple_clean\": true|false"
     "}"
     "}.\n\n"
     "Rules:\n"
@@ -454,7 +468,7 @@ async def _vlm_breakdown(
       body_compatibility=scores["body_compatibility"],
       trend_score=scores["trend_score"],
       style_match=scores["style_match"],
-    ), "labels"
+    ), "labels", penalties
   except Exception as exc:
     logger.error(f"VLM scoring failed; raw='{raw[:400] if 'raw' in locals() else ''}' err={exc}")
     raise HTTPException(
@@ -546,10 +560,11 @@ async def score_with_ai(
   # Try VLM for grounded numeric scores first (if configured)
   breakdown = None
   breakdown_mode = "numeric"
+  breakdown_flags: dict = {}
   if settings.replicate_vlm_model:
     res = await _vlm_breakdown(image_bytes, user_ctx, image_url)
     if res:
-      breakdown, breakdown_mode = res
+      breakdown, breakdown_mode, breakdown_flags = res
       logger.info("score pipeline: using VLM breakdown (model=%s)", settings.replicate_vlm_model)
   top_sim = 0.0
   top_prompt = None
@@ -589,7 +604,7 @@ async def score_with_ai(
     breakdown = _derive_breakdown(embedding, user_ctx, color_metrics, top_sim)
   else:
     color_metrics = _compute_color_metrics(image_bytes)
-  drip_score = _clamp(
+  overall_score = _clamp(
     0.30 * breakdown.color_match
     + 0.20 * breakdown.fit_quality
     + 0.20 * breakdown.body_compatibility
@@ -597,9 +612,21 @@ async def score_with_ai(
     + 0.20 * breakdown.style_match
   )
   if breakdown_mode == "numeric":
-    drip_score = _apply_noise(_normalize_score(drip_score))
+    overall_score = _apply_noise(_normalize_score(overall_score))
   else:
-    drip_score = _apply_noise(drip_score)
+    overall_score = _apply_noise(overall_score)
+
+  # Costume or absurd outfits get capped low
+  if breakdown_flags.get("costume_like"):
+    overall_score = _clamp(min(overall_score, 4.0))
+    breakdown.trend_score = _clamp(min(breakdown.trend_score, 3.0))
+    breakdown.style_match = _clamp(min(breakdown.style_match, 3.0))
+
+  # Simple outfit protection
+  if breakdown_flags.get("simple_clean"):
+    overall_score = _clamp(max(overall_score, 7.0))
+
+  quality_tier = _quality_tier(overall_score)
 
   # LLM suggestions (no heuristic fallback; propagate errors)
   suggestions, summary = await generate_suggestions(breakdown, user_ctx, image_bytes, image_url)
@@ -629,7 +656,7 @@ async def score_with_ai(
 
   logger.info(
     "drip_score={drip} breakdown={bd} brightness={bright:.2f} contrast={contrast:.2f} mask={mask:.2f} person_area_ratio={par:.2f} keypoints={kpts} avg_vis={avg_vis:.2f} top_prompt={prompt} top_sim={sim:.3f} llm_parse={llm_parse} conf={conf:.3f} img_w={w} img_h={h}",
-    drip=drip_score,
+    drip=overall_score,
     bd=breakdown.model_dump(),
     bright=color_metrics["brightness"],
     contrast=color_metrics["contrast"],
@@ -646,7 +673,12 @@ async def score_with_ai(
   )
 
   return ScoreResponse(
-    drip_score=drip_score, breakdown=breakdown, suggestions=suggestions, warnings=warnings
+    drip_score=overall_score,
+    overall_score=overall_score,
+    quality_tier=quality_tier,
+    breakdown=breakdown,
+    suggestions=suggestions,
+    warnings=warnings,
   )
 
 
@@ -663,14 +695,15 @@ def fake_score(user_styles: List[str]) -> ScoreResponse:
     trend_score=_apply_noise(_normalize_score(rand())),
     style_match=_apply_noise(_normalize_score(rand())),
   )
-  drip_score = _clamp(
+  overall_score = _clamp(
     0.30 * breakdown.color_match
     + 0.20 * breakdown.fit_quality
     + 0.20 * breakdown.body_compatibility
     + 0.10 * breakdown.trend_score
     + 0.20 * breakdown.style_match
   )
-  drip_score = _apply_noise(_normalize_score(drip_score))
+  overall_score = _apply_noise(_normalize_score(overall_score))
+  quality_tier = _quality_tier(overall_score)
   suggestions = [
     SuggestionCard(
       title="Fix lighting",
@@ -692,5 +725,10 @@ def fake_score(user_styles: List[str]) -> ScoreResponse:
     "AI scoring unavailable; showing a fallback score.",
   ]
   return ScoreResponse(
-    drip_score=drip_score, breakdown=breakdown, suggestions=suggestions, warnings=warnings
+    drip_score=overall_score,
+    overall_score=overall_score,
+    quality_tier=quality_tier,
+    breakdown=breakdown,
+    suggestions=suggestions,
+    warnings=warnings,
   )

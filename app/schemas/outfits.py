@@ -19,6 +19,8 @@ class SuggestionCard(BaseModel):
 
 class ScoreResponse(BaseModel):
   drip_score: float = Field(..., ge=0, le=10)
+  overall_score: float = Field(..., ge=0, le=10)
+  quality_tier: str
   breakdown: ScoreBreakdown
   suggestions: List[SuggestionCard] = Field(default_factory=list)
   warnings: List[str] = Field(default_factory=list)
