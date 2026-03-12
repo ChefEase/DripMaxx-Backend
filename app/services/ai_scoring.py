@@ -623,11 +623,12 @@ async def score_with_ai(
     if attrs:
       attr_data, breakdown_flags = attrs
       detected_items = [str(x).lower() for x in (attr_data.get("detected_items") or [])]
-      colors = [c.lower() for c in (attr_data.get("primary_colors") or []) if isinstance(c, str)]
+      colors = []
       for key in ("top_color", "pants_color", "shoe_color"):
         val = attr_data.get(key)
         if isinstance(val, str) and val.strip():
           colors.append(val.strip().lower())
+      colors.extend([c.lower() for c in (attr_data.get("primary_colors") or []) if isinstance(c, str)])
       # Quick color override for jeans
       if ("jeans" in detected_items or "denim" in detected_items) and "blue" not in colors:
         colors.append("blue")
@@ -642,19 +643,27 @@ async def score_with_ai(
       style_probs = attr_data.get("style_probs") or {}
       trend_hits = [t for t in (attr_data.get("trend_hits") or []) if isinstance(t, str)]
       # Layering heuristic: hoodie + inner layer or visible collar
-      if ("hoodie" in detected_items or "sweatshirt" in detected_items) and (
-        attr_data.get("inner_layer_visible") or attr_data.get("collar_visible")
-      ):
-        attr_data["layer_count"] = max(int(attr_data.get("layer_count") or 0), 1)
+      layer_count = int(attr_data.get("layer_count") or 0)
+      if attr_data.get("inner_layer_visible"):
+        layer_count += 1
+      if "hoodie" in detected_items:
+        layer_count += 1
+      layer_count = min(3, layer_count)
+      attr_data["layer_count"] = layer_count
       # Monochrome logic override when confidence is high
       neutrals = {"black", "white", "grey", "gray", "beige", "cream", "brown", "tan", "navy"}
       if color_conf >= 0.7:
-        if len(palette) <= 2 and all(c in neutrals for c in palette):
+        if len(palette) == 1:
+          breakdown_flags["excessive_monochrome"] = True
+        elif len(palette) <= 2 and all(c in neutrals for c in palette):
           breakdown_flags["excessive_monochrome"] = True
         else:
           breakdown_flags["excessive_monochrome"] = False
       else:
         breakdown_flags["excessive_monochrome"] = False
+      # Solid patterns should not trigger clashing patterns
+      if str(attr_data.get("pattern_type") or "").lower() == "solid":
+        breakdown_flags["clashing_patterns"] = False
       # Too many colors
       if len(palette) > 4:
         breakdown_flags["too_many_colors"] = True
@@ -669,9 +678,15 @@ async def score_with_ai(
         max_prob = 0.0
       if max_prob < 0.1:
         if {"hoodie", "sneakers", "jeans"}.issubset(set(detected_items)):
-          style_probs["streetwear"] = 0.6
+          style_probs["streetwear"] = 0.7
           style_probs["casual"] = 0.8
           style_probs["minimal"] = 0.4
+      # Normalize style_probs so total <= 1.0
+      if style_probs:
+        total = sum(style_probs.values())
+        if total > 1.0 and total > 0:
+          for k in list(style_probs.keys()):
+            style_probs[k] = style_probs[k] / total
       style_score = _eval_style_match(user_ctx.style_preferences or [], style_probs)
       body_score = _eval_body_compatibility(fit_score)
       breakdown = ScoreBreakdown(
