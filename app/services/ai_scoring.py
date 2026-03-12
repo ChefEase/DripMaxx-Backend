@@ -448,7 +448,15 @@ async def _vlm_attributes(
   model_ref = settings.replicate_vlm_model or VLM_MODEL_REF_DEFAULT
 
   sys_prompt = (
-    "You are a fashion attribute extractor. Look at the image and output ONLY JSON:\n"
+    "Rules (follow strictly):\n"
+    "- Only list items/colors that are visible.\n"
+    "- Monochrome means the SAME color family (1 color). Black+white+blue is NOT monochrome.\n"
+    "- If inner_layer_visible is true, layer_count must be >= 1.\n"
+    "- Use collar_visible only as a supporting hint.\n"
+    "- style_probs are probabilities 0-1.\n"
+    "- Each style probability must be present (even if very low like 0.05).\n"
+    "- If unsure about colors, lower color_confidence.\n"
+    "Output format (JSON only):\n"
     "{"
     "\"top_type\": \"\","
     "\"pants_type\": \"\","
@@ -476,16 +484,7 @@ async def _vlm_attributes(
     "\"too_many_colors\": true|false,"
     "\"simple_clean\": true|false"
     "}"
-    "}.\n\n"
-    "Rules:\n"
-    "- Only list items/colors that are visible.\n"
-    "- Monochrome means the SAME color family (1 color). Black+white+blue is NOT monochrome.\n"
-    "- If inner_layer_visible is true, layer_count must be >= 1.\n"
-    "- Use collar_visible only as a supporting hint.\n"
-    "- style_probs are probabilities 0-1.\n"
-    "- Each style probability must be present (even if very low like 0.05).\n"
-    "- If unsure about colors, lower color_confidence.\n"
-    "Output only JSON. No explanations, no extra text, no markdown."
+    "}"
   )
   user_prompt = (
     f"User style prefs: {', '.join(user_ctx.style_preferences) or 'unspecified'}; "
