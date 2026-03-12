@@ -479,7 +479,10 @@ async def _vlm_attributes(
     "}.\n\n"
     "Rules:\n"
     "- Only list items/colors that are visible.\n"
+    "- Monochrome = palette of 1 color, or 2 neutrals only (black/white/gray/beige/cream/brown/tan/navy).\n"
+    "- If inner_layer_visible is true, layer_count must be >= 1.\n"
     "- style_probs are probabilities 0-1.\n"
+    "- Each style probability must be present (even if very low like 0.05).\n"
     "- If unsure about colors, lower color_confidence.\n"
     "Output only JSON. No explanations, no extra text, no markdown."
   )

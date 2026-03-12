@@ -131,11 +131,7 @@ async def generate_suggestions(
   detection = _parse_detection(raw)
   detected_items = set(i.lower() for i in (detection.get("detected_items") or []) if isinstance(i, str))
   problems = set(p.lower() for p in (detection.get("problems_detected") or []) if isinstance(p, str))
-  summary = detection.get("summary")
-  if not isinstance(summary, str) or len(summary.strip()) < 5:
-    summary = _safe_summary_from_scores(breakdown)
-  else:
-    summary = "Summary: " + summary.strip()
+  summary = _safe_summary_from_scores(breakdown)
 
   def has_item(*names: str) -> bool:
     return any(n in detected_items for n in names)
