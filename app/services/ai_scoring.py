@@ -2,7 +2,7 @@ import io
 import random
 import statistics
 import json
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Tuple, Dict, Any
 
 import replicate
 import numpy as np
@@ -82,6 +82,70 @@ def _apply_penalties(scores: dict, penalties: dict) -> dict:
   scores["color_match"] = _clamp(scores["color_match"] + color_penalty)
   scores["style_match"] = _clamp(scores["style_match"] + cohesion_penalty)
   return scores
+
+
+def _score_from_level(level: str) -> float:
+  return {
+    "bad": 2.0,
+    "poor": 3.5,
+    "average": 5.8,
+    "good": 7.8,
+    "excellent": 9.2,
+  }.get(level.strip().lower(), 5.8)
+
+
+def _eval_color_score(colors: List[str], penalties: Dict[str, Any]) -> float:
+  count = len(colors)
+  score = 6.5
+  if penalties.get("neon_colors"):
+    score -= 2.0
+  if penalties.get("too_many_colors") or count > 4:
+    score -= 1.5
+  if penalties.get("excessive_monochrome"):
+    score += 1.0
+  return _clamp(score)
+
+
+def _eval_fit_score(fit_style: str, silhouette: str, body_type: str) -> float:
+  score = 6.5
+  if fit_style in ("tailored", "fitted", "balanced"):
+    score += 1.2
+  if fit_style in ("extremely_baggy", "extremely_tight"):
+    score -= 2.0
+  if silhouette == "balanced":
+    score += 0.8
+  if silhouette == "imbalanced":
+    score -= 1.2
+  # basic body compatibility tweaks
+  if body_type == "slim" and fit_style in ("layered", "tailored", "balanced"):
+    score += 0.5
+  if body_type == "athletic" and fit_style in ("relaxed", "streetwear", "balanced"):
+    score += 0.5
+  if body_type == "broad" and fit_style in ("structured", "tailored"):
+    score += 0.6
+  if body_type == "plus_size" and silhouette == "balanced":
+    score += 0.6
+  return _clamp(score)
+
+
+def _eval_trend_score(items: List[str], trend_hits: List[str], penalties: Dict[str, Any]) -> float:
+  score = 6.0 + min(2.0, 0.6 * len(trend_hits))
+  if penalties.get("costume_like"):
+    score = min(score, 3.0)
+  return _clamp(score)
+
+
+def _eval_style_match(user_styles: List[str], style_probs: Dict[str, float]) -> float:
+  if not user_styles or not style_probs:
+    return 6.0
+  total = 0.0
+  for s in user_styles:
+    total += style_probs.get(s, 0.0)
+  return _clamp(5.5 + min(4.0, total * 4.0))
+
+
+def _eval_body_compatibility(fit_score: float) -> float:
+  return _clamp(fit_score - 0.3)
 
 
 def _quality_tier(overall: float) -> str:
@@ -375,22 +439,28 @@ async def _text_embeddings(prompt: str) -> Sequence[float]:
   return await run_in_threadpool(_call)
 
 
-async def _vlm_breakdown(
+async def _vlm_attributes(
   image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
-) -> tuple[ScoreBreakdown, str, dict] | None:
-  """Ask the VLM for qualitative labels + penalties; convert to scores."""
+) -> tuple[Dict[str, Any], dict] | None:
+  """Ask the VLM for visual attributes and penalties; return attributes."""
   if not settings.replicate_api_token:
     return None
   model_ref = settings.replicate_vlm_model or VLM_MODEL_REF_DEFAULT
 
   sys_prompt = (
-    "You are a fashion rater. Look at the image and output ONLY JSON with qualitative labels and penalties:\n"
+    "You are a fashion attribute extractor. Look at the image and output ONLY JSON:\n"
     "{"
-    "\"color_balance\": \"bad|poor|average|good|excellent\","
-    "\"silhouette_fit\": \"bad|poor|average|good|excellent\","
-    "\"outfit_cohesion\": \"bad|poor|average|good|excellent\","
-    "\"trend_alignment\": \"bad|poor|average|good|excellent\","
-    "\"originality\": \"bad|poor|average|good|excellent\","
+    "\"top_type\": \"\","
+    "\"pants_type\": \"\","
+    "\"shoe_type\": \"\","
+    "\"primary_colors\": [\"black\",\"white\"],"
+    "\"fit_style\": \"relaxed|tailored|balanced|extremely_baggy|extremely_tight\","
+    "\"layer_count\": 0,"
+    "\"pattern_type\": \"solid|patterned\","
+    "\"silhouette_balance\": \"balanced|imbalanced\","
+    "\"style_probs\": {\"streetwear\":0.0,\"minimal\":0.0,\"casual\":0.0,\"luxury\":0.0,\"vintage\":0.0,\"y2k\":0.0,\"athleisure\":0.0,\"smart_casual\":0.0,\"experimental\":0.0},"
+    "\"trend_hits\": [\"relaxed_denim\",\"oversized_hoodies\"],"
+    "\"detected_items\": [\"hoodie\",\"jeans\",\"sneakers\"],"
     "\"penalties\": {"
     "\"excessive_monochrome\": true|false,"
     "\"neon_colors\": true|false,"
@@ -402,11 +472,8 @@ async def _vlm_breakdown(
     "}"
     "}.\n\n"
     "Rules:\n"
-    "- Base ratings on how well the outfit fits the user's personal style and body, not just general trends.\n"
-    "- Give higher weight to fit and cohesion (athletic build focus).\n"
-    "- Color_balance reflects harmony, contrast, and luxury feel.\n"
-    "- Trend_alignment counts, but do not harshly penalize stylish non-hype looks.\n"
-    "- Originality reflects uniqueness without being costume-like.\n"
+    "- Only list items/colors that are visible.\n"
+    "- style_probs are probabilities 0-1.\n"
     "Output only JSON. No explanations, no extra text, no markdown."
   )
   user_prompt = (
@@ -451,24 +518,7 @@ async def _vlm_breakdown(
     raw = raw.replace("\\_", "_").strip()
     data = json.loads(raw)
     penalties = data.get("penalties") or {}
-    # Map new structure to existing fields
-    scores = {
-      "color_match": _label_to_score(data.get("color_balance", "average")),
-      "fit_quality": _label_to_score(data.get("silhouette_fit", "average")),
-      "body_compatibility": _label_to_score(data.get("silhouette_fit", "average")),
-      "trend_score": _label_to_score(data.get("trend_alignment", "average")),
-      "style_match": _label_to_score(data.get("outfit_cohesion", "average")),
-    }
-    scores = _apply_penalties(scores, penalties)
-    # Add slight noise without normalization for label-based scores
-    scores = {k: _apply_noise(v) for k, v in scores.items()}
-    return ScoreBreakdown(
-      color_match=scores["color_match"],
-      fit_quality=scores["fit_quality"],
-      body_compatibility=scores["body_compatibility"],
-      trend_score=scores["trend_score"],
-      style_match=scores["style_match"],
-    ), "labels", penalties
+    return data, penalties
   except Exception as exc:
     logger.error(f"VLM scoring failed; raw='{raw[:400] if 'raw' in locals() else ''}' err={exc}")
     raise HTTPException(
@@ -562,10 +612,30 @@ async def score_with_ai(
   breakdown_mode = "numeric"
   breakdown_flags: dict = {}
   if settings.replicate_vlm_model:
-    res = await _vlm_breakdown(image_bytes, user_ctx, image_url)
-    if res:
-      breakdown, breakdown_mode, breakdown_flags = res
-      logger.info("score pipeline: using VLM breakdown (model=%s)", settings.replicate_vlm_model)
+    attrs = await _vlm_attributes(image_bytes, user_ctx, image_url)
+    if attrs:
+      attr_data, breakdown_flags = attrs
+      colors = [c.lower() for c in (attr_data.get("primary_colors") or []) if isinstance(c, str)]
+      fit_style = str(attr_data.get("fit_style") or "").lower()
+      silhouette = str(attr_data.get("silhouette_balance") or "").lower()
+      style_probs = attr_data.get("style_probs") or {}
+      trend_hits = [t for t in (attr_data.get("trend_hits") or []) if isinstance(t, str)]
+      color_score = _eval_color_score(colors, breakdown_flags)
+      fit_score = _eval_fit_score(fit_style, silhouette, (user_ctx.user_body_type or "").lower())
+      trend_score = _eval_trend_score(
+        [str(x) for x in (attr_data.get("detected_items") or [])], trend_hits, breakdown_flags
+      )
+      style_score = _eval_style_match(user_ctx.style_preferences or [], style_probs)
+      body_score = _eval_body_compatibility(fit_score)
+      breakdown = ScoreBreakdown(
+        color_match=color_score,
+        fit_quality=fit_score,
+        body_compatibility=body_score,
+        trend_score=trend_score,
+        style_match=style_score,
+      )
+      breakdown_mode = "rules"
+      logger.info("score pipeline: using rule-based breakdown (model=%s)", settings.replicate_vlm_model)
   top_sim = 0.0
   top_prompt = None
 
