@@ -129,7 +129,7 @@ def _eval_fit_score(fit_style: str, silhouette: str, body_type: str) -> float:
 
 
 def _eval_trend_score(items: List[str], trend_hits: List[str], penalties: Dict[str, Any]) -> float:
-  score = 6.0 + min(2.0, 0.6 * len(trend_hits))
+  score = min(10.0, 6.0 + 1.2 * len(trend_hits))
   if penalties.get("costume_like"):
     score = min(score, 3.0)
   return _clamp(score)
@@ -453,9 +453,15 @@ async def _vlm_attributes(
     "\"top_type\": \"\","
     "\"pants_type\": \"\","
     "\"shoe_type\": \"\","
+    "\"top_color\": \"\","
+    "\"pants_color\": \"\","
+    "\"shoe_color\": \"\","
     "\"primary_colors\": [\"black\",\"white\"],"
+    "\"color_confidence\": 0.0,"
     "\"fit_style\": \"relaxed|tailored|balanced|extremely_baggy|extremely_tight\","
     "\"layer_count\": 0,"
+    "\"collar_visible\": true|false,"
+    "\"inner_layer_visible\": true|false,"
     "\"pattern_type\": \"solid|patterned\","
     "\"silhouette_balance\": \"balanced|imbalanced\","
     "\"style_probs\": {\"streetwear\":0.0,\"minimal\":0.0,\"casual\":0.0,\"luxury\":0.0,\"vintage\":0.0,\"y2k\":0.0,\"athleisure\":0.0,\"smart_casual\":0.0,\"experimental\":0.0},"
@@ -474,6 +480,7 @@ async def _vlm_attributes(
     "Rules:\n"
     "- Only list items/colors that are visible.\n"
     "- style_probs are probabilities 0-1.\n"
+    "- If unsure about colors, lower color_confidence.\n"
     "Output only JSON. No explanations, no extra text, no markdown."
   )
   user_prompt = (
@@ -615,16 +622,56 @@ async def score_with_ai(
     attrs = await _vlm_attributes(image_bytes, user_ctx, image_url)
     if attrs:
       attr_data, breakdown_flags = attrs
+      detected_items = [str(x).lower() for x in (attr_data.get("detected_items") or [])]
       colors = [c.lower() for c in (attr_data.get("primary_colors") or []) if isinstance(c, str)]
+      for key in ("top_color", "pants_color", "shoe_color"):
+        val = attr_data.get(key)
+        if isinstance(val, str) and val.strip():
+          colors.append(val.strip().lower())
+      # Quick color override for jeans
+      if ("jeans" in detected_items or "denim" in detected_items) and "blue" not in colors:
+        colors.append("blue")
+      # Normalize palette
+      palette = []
+      for c in colors:
+        if c and c not in palette:
+          palette.append(c)
+      color_conf = float(attr_data.get("color_confidence") or 0.0)
       fit_style = str(attr_data.get("fit_style") or "").lower()
       silhouette = str(attr_data.get("silhouette_balance") or "").lower()
       style_probs = attr_data.get("style_probs") or {}
       trend_hits = [t for t in (attr_data.get("trend_hits") or []) if isinstance(t, str)]
-      color_score = _eval_color_score(colors, breakdown_flags)
+      # Layering heuristic: hoodie + inner layer or visible collar
+      if ("hoodie" in detected_items or "sweatshirt" in detected_items) and (
+        attr_data.get("inner_layer_visible") or attr_data.get("collar_visible")
+      ):
+        attr_data["layer_count"] = max(int(attr_data.get("layer_count") or 0), 1)
+      # Monochrome logic override when confidence is high
+      neutrals = {"black", "white", "grey", "gray", "beige", "cream", "brown", "tan", "navy"}
+      if color_conf >= 0.7:
+        if len(palette) <= 2 and all(c in neutrals for c in palette):
+          breakdown_flags["excessive_monochrome"] = True
+        else:
+          breakdown_flags["excessive_monochrome"] = False
+      else:
+        breakdown_flags["excessive_monochrome"] = False
+      # Too many colors
+      if len(palette) > 4:
+        breakdown_flags["too_many_colors"] = True
+      color_score = _eval_color_score(palette, breakdown_flags)
       fit_score = _eval_fit_score(fit_style, silhouette, (user_ctx.user_body_type or "").lower())
-      trend_score = _eval_trend_score(
-        [str(x) for x in (attr_data.get("detected_items") or [])], trend_hits, breakdown_flags
-      )
+      trend_score = _eval_trend_score(detected_items, trend_hits, breakdown_flags)
+      # Fallback style probs if classifier is empty
+      if isinstance(style_probs, dict):
+        max_prob = max(style_probs.values() or [0.0])
+      else:
+        style_probs = {}
+        max_prob = 0.0
+      if max_prob < 0.1:
+        if {"hoodie", "sneakers", "jeans"}.issubset(set(detected_items)):
+          style_probs["streetwear"] = 0.6
+          style_probs["casual"] = 0.8
+          style_probs["minimal"] = 0.4
       style_score = _eval_style_match(user_ctx.style_preferences or [], style_probs)
       body_score = _eval_body_compatibility(fit_score)
       breakdown = ScoreBreakdown(
