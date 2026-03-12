@@ -479,8 +479,9 @@ async def _vlm_attributes(
     "}.\n\n"
     "Rules:\n"
     "- Only list items/colors that are visible.\n"
-    "- Monochrome = palette of 1 color, or 2 neutrals only (black/white/gray/beige/cream/brown/tan/navy).\n"
+    "- Monochrome means the SAME color family (1 color). Black+white+blue is NOT monochrome.\n"
     "- If inner_layer_visible is true, layer_count must be >= 1.\n"
+    "- Use collar_visible only as a supporting hint.\n"
     "- style_probs are probabilities 0-1.\n"
     "- Each style probability must be present (even if very low like 0.05).\n"
     "- If unsure about colors, lower color_confidence.\n"
@@ -655,15 +656,16 @@ async def score_with_ai(
       attr_data["layer_count"] = layer_count
       # Monochrome logic override when confidence is high
       neutrals = {"black", "white", "grey", "gray", "beige", "cream", "brown", "tan", "navy"}
-      if color_conf >= 0.7:
+      # If colors are uncertain, do not apply harsh penalties.
+      if color_conf < 0.7:
+        breakdown_flags["excessive_monochrome"] = False
+        breakdown_flags["neon_colors"] = False
+        breakdown_flags["too_many_colors"] = False
+      else:
         if len(palette) == 1:
-          breakdown_flags["excessive_monochrome"] = True
-        elif len(palette) <= 2 and all(c in neutrals for c in palette):
           breakdown_flags["excessive_monochrome"] = True
         else:
           breakdown_flags["excessive_monochrome"] = False
-      else:
-        breakdown_flags["excessive_monochrome"] = False
       # Solid patterns should not trigger clashing patterns
       if str(attr_data.get("pattern_type") or "").lower() == "solid":
         breakdown_flags["clashing_patterns"] = False
@@ -684,6 +686,19 @@ async def score_with_ai(
           style_probs["streetwear"] = 0.7
           style_probs["casual"] = 0.8
           style_probs["minimal"] = 0.4
+      # Ensure non-zero probabilities to avoid all-zero outputs
+      if not style_probs or max_prob == 0.0:
+        style_probs = {
+          "streetwear": 0.05,
+          "minimal": 0.05,
+          "casual": 0.05,
+          "luxury": 0.05,
+          "vintage": 0.05,
+          "y2k": 0.05,
+          "athleisure": 0.05,
+          "smart_casual": 0.05,
+          "experimental": 0.05,
+        }
       # Normalize style_probs so total <= 1.0
       if style_probs:
         total = sum(style_probs.values())
