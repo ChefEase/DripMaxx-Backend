@@ -449,6 +449,8 @@ async def _vlm_attributes(
 
   sys_prompt = (
     "Rules (follow strictly):\n"
+    "- If no clear outfit is visible, set outfit_present=false and leave clothing fields empty.\n"
+    "- Do not guess clothing when only a face/close-up is present.\n"
     "- Only list items/colors that are visible.\n"
     "- Monochrome means the SAME color family (1 color). Black+white+blue is NOT monochrome.\n"
     "- If inner_layer_visible is true, layer_count must be >= 1.\n"
@@ -458,6 +460,7 @@ async def _vlm_attributes(
     "- If unsure about colors, lower color_confidence.\n"
     "Output format (JSON only):\n"
     "{"
+    "\"outfit_present\": true|false,"
     "\"top_type\": \"\","
     "\"pants_type\": \"\","
     "\"shoe_type\": \"\","
@@ -625,7 +628,21 @@ async def score_with_ai(
     attrs = await _vlm_attributes(image_bytes, user_ctx, image_url)
     if attrs:
       attr_data, breakdown_flags = attrs
+      outfit_present = attr_data.get("outfit_present")
+      if outfit_present is False:
+        raise HTTPException(
+          status_code=status.HTTP_400_BAD_REQUEST,
+          detail="No outfit, no rating.",
+        )
       detected_items = [str(x).lower() for x in (attr_data.get("detected_items") or [])]
+      top_type = str(attr_data.get("top_type") or "").strip().lower()
+      pants_type = str(attr_data.get("pants_type") or "").strip().lower()
+      shoe_type = str(attr_data.get("shoe_type") or "").strip().lower()
+      if not detected_items and not (top_type or pants_type or shoe_type):
+        raise HTTPException(
+          status_code=status.HTTP_400_BAD_REQUEST,
+          detail="No outfit, no rating.",
+        )
       colors = []
       for key in ("top_color", "pants_color", "shoe_color"):
         val = attr_data.get(key)
