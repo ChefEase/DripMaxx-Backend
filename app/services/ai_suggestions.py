@@ -156,9 +156,18 @@ async def generate_suggestions(
 
   if has_item("shoes", "boots", "sneakers"):
     candidates.append(("fit", "Upgrade footwear texture", "Choose a more textured shoe to add visual interest.", "lower"))
-
-  candidates.append(("fit", "Balance proportions", "Keep top and bottom volumes balanced for a cleaner silhouette.", "overall"))
-  candidates.append(("color", "Tighten the palette", "Limit to one accent color for a more polished look.", "overall"))
+  if not candidates:
+    # Dynamic fallback: derive suggestions from lowest scores
+    fit_score = min(breakdown.fit_quality, breakdown.body_compatibility)
+    score_map = [
+      (breakdown.color_match, ("color", "Add color contrast", "Introduce a second color to break the monochrome look.", "overall")),
+      (fit_score, ("fit", "Refine the fit", "Adjust proportions with a cleaner fit on top or bottom.", "overall")),
+      (breakdown.trend_score, ("other", "Modernize one piece", "Swap one item for a more current silhouette or finish.", "overall")),
+      (breakdown.style_match, ("layering", "Improve cohesion", "Use a cohesive layer or texture to unify the outfit.", "overall")),
+    ]
+    score_map.sort(key=lambda x: x[0])
+    for _, suggestion in score_map:
+      candidates.append(suggestion)
 
   filtered = []
   for t, title, desc, area in candidates:
