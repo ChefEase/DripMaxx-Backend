@@ -57,6 +57,19 @@ def _safe_summary_from_scores(breakdown: ScoreBreakdown) -> str:
   return "Summary: " + ", ".join(parts) + "."
 
 
+def _is_valid_detection(detection: Dict[str, Any]) -> bool:
+  if not isinstance(detection, dict):
+    return False
+  items = detection.get("detected_items")
+  problems = detection.get("problems_detected")
+  improvements = detection.get("improvements")
+  if not isinstance(items, list) or not isinstance(problems, list) or not isinstance(improvements, list):
+    return False
+  if not any(isinstance(s, str) and s.strip() for s in improvements):
+    return False
+  return True
+
+
 async def generate_suggestions(
   breakdown: ScoreBreakdown, user_ctx: UserContext, image_bytes: bytes, image_url: str | None = None
 ) -> Tuple[List[SuggestionCard], str | None]:
@@ -68,15 +81,17 @@ async def generate_suggestions(
     )
 
   sys_prompt = (
-    "Look at the image and output ONLY JSON with detected items, problems, and a short summary:\n"
+    "Look at the image and output ONLY JSON with detected items, problems, improvements, and a short summary:\n"
     "{"
     "\"detected_items\": [\"shirt\",\"pants\",\"shoes\",\"jacket\",\"hat\",\"belt\",\"dress\",\"skirt\",\"boots\",\"sneakers\",\"hoodie\",\"coat\",\"bag\",\"jewelry\"],"
     "\"problems_detected\": [\"monochrome_color\",\"lack_of_layers\",\"clashing_patterns\",\"poor_fit\",\"low_trend\",\"low_cohesion\"],"
+    "\"improvements\": [\"short, concrete improvement\"],"
     "\"summary\": \"one sentence\""
     "}\n"
     "Rules:\n"
     "- Only list items that are clearly visible.\n"
     "- problems_detected can be empty.\n"
+    "- improvements must be image-based, concrete, and at least one item.\n"
     "- Summary must be one sentence about fit/color/overall balance.\n"
     "Output only JSON."
   )
@@ -129,8 +144,33 @@ async def generate_suggestions(
   base_prompt = sys_prompt + "\n\n" + user_prompt
   raw = await run_in_threadpool(lambda: _call_vlm(base_prompt, 0.2))
   detection = _parse_detection(raw)
+  if not _is_valid_detection(detection):
+    strict_prompt = base_prompt + "\n\nReturn ONLY valid JSON. No markdown. No extra text."
+    raw = await run_in_threadpool(lambda: _call_vlm(strict_prompt, 0.0))
+    detection = _parse_detection(raw)
+  if not _is_valid_detection(detection):
+    repair_prompt = (
+      "Fix and return ONLY valid JSON for this schema:\n"
+      "{"
+      "\"detected_items\": [\"shirt\",\"pants\",\"shoes\",\"jacket\",\"hat\",\"belt\",\"dress\",\"skirt\",\"boots\",\"sneakers\",\"hoodie\",\"coat\",\"bag\",\"jewelry\"],"
+      "\"problems_detected\": [\"monochrome_color\",\"lack_of_layers\",\"clashing_patterns\",\"poor_fit\",\"low_trend\",\"low_cohesion\"],"
+      "\"improvements\": [\"short, concrete improvement\"],"
+      "\"summary\": \"one sentence\""
+      "}\n"
+      "Rules:\n"
+      "- improvements must be image-based, concrete, and at least one item.\n"
+      "- Output only JSON.\n\n"
+      f"RAW:\n{raw}"
+    )
+    raw = await run_in_threadpool(lambda: _call_vlm(repair_prompt, 0.0))
+    detection = _parse_detection(raw)
   detected_items = set(i.lower() for i in (detection.get("detected_items") or []) if isinstance(i, str))
   problems = set(p.lower() for p in (detection.get("problems_detected") or []) if isinstance(p, str))
+  improvements = [
+    re.sub(r"\s+", " ", s).strip()
+    for s in (detection.get("improvements") or [])
+    if isinstance(s, str) and s.strip()
+  ]
   summary = _safe_summary_from_scores(breakdown)
 
   def has_item(*names: str) -> bool:
@@ -156,19 +196,25 @@ async def generate_suggestions(
 
   if has_item("shoes", "boots", "sneakers"):
     candidates.append(("fit", "Upgrade footwear texture", "Choose a more textured shoe to add visual interest.", "lower"))
-  if not candidates:
-    # Dynamic fallback: derive suggestions from lowest scores
-    fit_score = min(breakdown.fit_quality, breakdown.body_compatibility)
-    score_map = [
-      (breakdown.color_match, ("color", "Add color contrast", "Introduce a second color to break the monochrome look.", "overall")),
-      (fit_score, ("fit", "Refine the fit", "Adjust proportions with a cleaner fit on top or bottom.", "overall")),
-      (breakdown.trend_score, ("other", "Modernize one piece", "Swap one item for a more current silhouette or finish.", "overall")),
-      (breakdown.style_match, ("layering", "Improve cohesion", "Use a cohesive layer or texture to unify the outfit.", "overall")),
-    ]
-    score_map.sort(key=lambda x: x[0])
-    for _, suggestion in score_map:
-      candidates.append(suggestion)
 
+  if has_item("jacket", "coat", "overshirt"):
+    candidates.append(("layering", "Structure the outer layer", "Keep outerwear structured to sharpen the silhouette.", "upper"))
+  if has_item("hoodie"):
+    candidates.append(("fit", "Clean up hoodie shape", "Keep the hoodie fit clean so it doesn't bunch.", "upper"))
+  if has_item("dress", "skirt"):
+    candidates.append(("fit", "Define the waistline", "A subtle waist definition can improve proportions.", "overall"))
+  if has_item("pants", "skirt", "dress"):
+    candidates.append(("fit", "Tighten the hem", "A sharper hem length improves the leg line.", "lower"))
+  if has_item("sneakers"):
+    candidates.append(("other", "Keep sneakers crisp", "Clean, crisp sneakers elevate the base of the look.", "lower"))
+
+  for imp in improvements:
+    words = imp.split()
+    title = " ".join(words[:6]) if words else imp
+    if title:
+      title = title[0].upper() + title[1:]
+    desc = imp if imp.endswith(".") else f"{imp}."
+    candidates.append(("other", title or "Improve the look", desc, "overall"))
   filtered = []
   for t, title, desc, area in candidates:
     lower = f"{title} {desc}".lower()
