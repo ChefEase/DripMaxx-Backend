@@ -164,7 +164,7 @@ async def get_leaderboard(
   user_ids = [r.user_id for r in rows]
   users_stmt = select(User.id, User.username, User.display_name).where(User.id.in_(user_ids)) if user_ids else None
   users_map = {}
-  if users_stmt:
+  if users_stmt is not None:
     try:
       ur = await db.execute(users_stmt)
       for u in ur.fetchall():

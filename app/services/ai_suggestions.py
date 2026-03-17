@@ -46,22 +46,22 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
   if not isinstance(detection, dict):
     return False
   summary = detection.get("summary")
-  suggestions = detection.get("suggestions")
+  main_suggestions = detection.get("main_suggestions")
+  optional_suggestions = detection.get("optional_suggestions")
   if not isinstance(summary, str) or not summary.strip():
     return False
-  if not isinstance(suggestions, list) or not suggestions:
+  if not isinstance(main_suggestions, list) or not isinstance(optional_suggestions, list):
     return False
-  valid_count = 0
-  for item in suggestions:
+  if len(main_suggestions) != 3 or len(optional_suggestions) != 2:
+    return False
+  for item in [*main_suggestions, *optional_suggestions]:
     if not isinstance(item, dict):
-      continue
+      return False
     title = item.get("title")
     type_name = item.get("type")
     description = item.get("description")
-    if isinstance(title, str) and title.strip() and isinstance(type_name, str) and type_name.strip() and isinstance(description, str) and description.strip():
-      valid_count += 1
-  if valid_count == 0:
-    return False
+    if not (isinstance(title, str) and title.strip() and isinstance(type_name, str) and type_name.strip() and isinstance(description, str) and description.strip()):
+      return False
   return True
 
 
@@ -79,7 +79,12 @@ async def generate_suggestions(
     "Look at the image and output ONLY JSON with dynamic suggestion cards and a summary:\n"
     "{"
     "\"summary\": \"one sentence about this specific outfit\","
-    "\"suggestions\": ["
+    "\"main_suggestions\": ["
+    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+    "],"
+    "\"optional_suggestions\": ["
     "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
     "]"
     "}\n"
@@ -87,7 +92,7 @@ async def generate_suggestions(
     "- Base every summary and suggestion on the actual image plus the provided score breakdown.\n"
     "- Do not use canned wording, templates, or generic fallback advice.\n"
     "- Suggestions must be image-specific, concrete, and visually grounded.\n"
-    "- Return between 1 and 5 suggestions.\n"
+    "- Return exactly 3 main_suggestions and exactly 2 optional_suggestions.\n"
     "- Use only the allowed types: fit, layering, color, accessory, other.\n"
     "- Do not mention items that are not visible.\n"
     "Output only JSON."
@@ -151,20 +156,30 @@ async def generate_suggestions(
       "Fix and return ONLY valid JSON for this schema:\n"
       "{"
       "\"summary\": \"one sentence about this specific outfit\","
-      "\"suggestions\": ["
+      "\"main_suggestions\": ["
+      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+      "],"
+      "\"optional_suggestions\": ["
+      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
       "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
       "]"
       "}\n"
       "Rules:\n"
       "- summary must be non-empty.\n"
-      "- suggestions must contain at least one valid suggestion object.\n"
+      "- main_suggestions must contain exactly 3 valid suggestion objects.\n"
+      "- optional_suggestions must contain exactly 2 valid suggestion objects.\n"
       "- Output only JSON.\n\n"
       f"RAW:\n{raw}"
     )
     raw = await run_in_threadpool(lambda: _call_vlm(repair_prompt, 0.0))
     detection = _parse_detection(raw)
   summary = re.sub(r"\s+", " ", str(detection.get("summary") or "")).strip()
-  suggestions_raw = detection.get("suggestions") or []
+  suggestions_raw = [
+    *(detection.get("main_suggestions") or []),
+    *(detection.get("optional_suggestions") or []),
+  ]
   final = []
   for item in suggestions_raw:
     if not isinstance(item, dict):
