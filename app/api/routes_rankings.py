@@ -60,6 +60,17 @@ def _time_bounds(scope: str):
   return start, now
 
 
+def _eligible_users_subquery():
+  return (
+    select(Outfit.user_id.label("user_id"))
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id.isnot(None))
+    .group_by(Outfit.user_id)
+    .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
+    .subquery()
+  )
+
+
 async def _get_user_ratings_count(
   db: AsyncSession,
   user_id: str,
@@ -110,6 +121,7 @@ async def get_leaderboard(
     raise HTTPException(status_code=400, detail="style required for style scope (e.g. Streetwear, Minimal)")
 
   try:
+    eligible_users = _eligible_users_subquery()
     # Subquery: users with >= MIN_RATINGS, with avg drip_score
     base = (
       select(
@@ -118,9 +130,9 @@ async def get_leaderboard(
         func.count(OutfitScore.id).label("cnt"),
       )
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .join(eligible_users, eligible_users.c.user_id == Outfit.user_id)
       .where(Outfit.user_id.isnot(None))
       .group_by(Outfit.user_id)
-      .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
     )
     if scope not in ("global", "country", "group", "style"):
       start, _ = _time_bounds(scope)
@@ -232,19 +244,20 @@ async def get_my_rankings(
     style_name = scope.split(":", 1)[1] if scope.startswith("style:") else None
     count_scope = "style" if style_name else scope
     cnt, avg = await _get_user_ratings_count(db, user_id, count_scope, country, group_id, style_name)
-    if cnt < MIN_RATINGS_FOR_LEADERBOARD:
+    if cnt < 1:
       rankings.append(
         UserRankingSummary(scope=scope, rank=None, total_eligible=0, avg_drip_score=round(avg, 2) if avg else None, rating_count=cnt)
       )
       continue
 
     # Compute rank: count users with higher avg in same scope
+    eligible_users = _eligible_users_subquery()
     base = (
       select(Outfit.user_id, func.avg(OutfitScore.drip_score).label("avg_drip"), func.count(OutfitScore.id).label("cnt"))
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .join(eligible_users, eligible_users.c.user_id == Outfit.user_id)
       .where(Outfit.user_id.isnot(None))
       .group_by(Outfit.user_id)
-      .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
     )
     if scope not in ("global", "country", "style") and not style_name:
       start, _ = _time_bounds(scope)

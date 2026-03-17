@@ -32,6 +32,17 @@ def _scope_start(scope: str):
   return None
 
 
+def _eligible_users_subquery():
+  return (
+    select(Outfit.user_id.label("user_id"))
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id.isnot(None))
+    .group_by(Outfit.user_id)
+    .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
+    .subquery()
+  )
+
+
 @router.get("/{user_id}/public-profile")
 async def get_public_profile(
   user_id: str,
@@ -143,6 +154,7 @@ async def get_public_profile(
   if profile_row and profile_row.country:
     scopes.append("country")
   scopes.extend([f"style:{s}" for s in STYLE_SCOPES])
+  eligible_users = _eligible_users_subquery()
   for scope in scopes:
     q = (
       select(
@@ -151,9 +163,9 @@ async def get_public_profile(
         func.count(OutfitScore.id).label("cnt"),
       )
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .join(eligible_users, eligible_users.c.user_id == Outfit.user_id)
       .where(Outfit.user_id.isnot(None))
       .group_by(Outfit.user_id)
-      .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
       .order_by(desc(func.avg(OutfitScore.drip_score)))
     )
     start = _scope_start(scope)
