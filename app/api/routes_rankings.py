@@ -36,6 +36,7 @@ from app.schemas.rankings import (
 router = APIRouter(prefix="/v1/rankings", tags=["rankings"])
 logger = logging.getLogger(__name__)
 MIN_RATINGS_FOR_LEADERBOARD = 10
+STYLE_SCOPES = ["Streetwear", "Minimal", "Vintage", "Luxury", "Y2K", "Casual"]
 
 
 def _gen_group_code() -> str:
@@ -59,7 +60,14 @@ def _time_bounds(scope: str):
   return start, now
 
 
-async def _get_user_ratings_count(db: AsyncSession, user_id: str, scope: str, country: str | None = None, group_id: str | None = None) -> tuple[int, float | None]:
+async def _get_user_ratings_count(
+  db: AsyncSession,
+  user_id: str,
+  scope: str,
+  country: str | None = None,
+  group_id: str | None = None,
+  style: str | None = None,
+) -> tuple[int, float | None]:
   """Return (count, avg_drip_score) for user in given scope."""
   q = (
     select(func.count(OutfitScore.id).label("cnt"), func.avg(OutfitScore.drip_score).label("avg"))
@@ -74,6 +82,8 @@ async def _get_user_ratings_count(db: AsyncSession, user_id: str, scope: str, co
     q = q.join(UserProfile, UserProfile.user_id == Outfit.user_id).where(UserProfile.country == country)
   if group_id:
     q = q.join(RankingGroupMember, RankingGroupMember.user_id == Outfit.user_id).where(RankingGroupMember.group_id == group_id)
+  if style:
+    q = q.where(cast(Outfit.style_tags, JSONB).contains([style]))
   res = await db.execute(q)
   row = res.fetchone()
   cnt = row.cnt or 0
@@ -99,44 +109,44 @@ async def get_leaderboard(
   if scope == "style" and not style:
     raise HTTPException(status_code=400, detail="style required for style scope (e.g. Streetwear, Minimal)")
 
-  # Subquery: users with >= MIN_RATINGS, with avg drip_score
-  base = (
-    select(
-      Outfit.user_id,
-      func.avg(OutfitScore.drip_score).label("avg_drip"),
-      func.count(OutfitScore.id).label("cnt"),
-    )
-    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
-    .where(Outfit.user_id.isnot(None))
-    .group_by(Outfit.user_id)
-    .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
-  )
-  if scope not in ("global", "country", "group", "style"):
-    start, _ = _time_bounds(scope)
-    if start:
-      base = base.where(OutfitScore.created_at >= start)
-  if scope == "country" and country:
-    base = base.join(UserProfile, UserProfile.user_id == Outfit.user_id).where(UserProfile.country == country)
-  if scope == "group" and group_id:
-    base = base.join(RankingGroupMember, RankingGroupMember.user_id == Outfit.user_id).where(RankingGroupMember.group_id == group_id)
-  if scope == "style" and style:
-    base = base.where(cast(Outfit.style_tags, JSONB).contains([style]))
-
-  subq = base.subquery()
-  stmt = (
-    select(subq.c.user_id, subq.c.avg_drip, subq.c.cnt)
-    .order_by(subq.c.avg_drip.desc())
-    .limit(limit)
-  )
   try:
+    # Subquery: users with >= MIN_RATINGS, with avg drip_score
+    base = (
+      select(
+        Outfit.user_id,
+        func.avg(OutfitScore.drip_score).label("avg_drip"),
+        func.count(OutfitScore.id).label("cnt"),
+      )
+      .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .where(Outfit.user_id.isnot(None))
+      .group_by(Outfit.user_id)
+      .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
+    )
+    if scope not in ("global", "country", "group", "style"):
+      start, _ = _time_bounds(scope)
+      if start:
+        base = base.where(OutfitScore.created_at >= start)
+    if scope == "country" and country:
+      base = base.join(UserProfile, UserProfile.user_id == Outfit.user_id).where(UserProfile.country == country)
+    if scope == "group" and group_id:
+      base = base.join(RankingGroupMember, RankingGroupMember.user_id == Outfit.user_id).where(RankingGroupMember.group_id == group_id)
+    if scope == "style" and style:
+      base = base.where(cast(Outfit.style_tags, JSONB).contains([style]))
+
+    subq = base.subquery()
+    stmt = (
+      select(subq.c.user_id, subq.c.avg_drip, subq.c.cnt)
+      .order_by(subq.c.avg_drip.desc())
+      .limit(limit)
+    )
     res = await db.execute(stmt)
     rows = res.fetchall()
   except SQLAlchemyError as exc:
-    # Graceful fallback if optional columns (e.g., style_tags) are missing
     logger.error("leaderboard query failed: %s", exc, exc_info=True)
-    if scope == "style":
-      return LeaderboardResponse(scope=scope, entries=[], total_eligible=0)
-    raise
+    return LeaderboardResponse(scope=scope, entries=[], total_eligible=0)
+  except Exception as exc:
+    logger.error("leaderboard unexpected failure: %s", exc, exc_info=True)
+    return LeaderboardResponse(scope=scope, entries=[], total_eligible=0)
   total = len(rows)
 
   user_ids = [r.user_id for r in rows]
@@ -214,10 +224,14 @@ async def get_my_rankings(
   ]
   if user_country:
     scopes_to_check.append(("country", user_country, None))
+  for style_name in STYLE_SCOPES:
+    scopes_to_check.append((f"style:{style_name}", None, None))
 
   rankings = []
   for scope, country, group_id in scopes_to_check:
-    cnt, avg = await _get_user_ratings_count(db, user_id, scope, country, group_id)
+    style_name = scope.split(":", 1)[1] if scope.startswith("style:") else None
+    count_scope = "style" if style_name else scope
+    cnt, avg = await _get_user_ratings_count(db, user_id, count_scope, country, group_id, style_name)
     if cnt < MIN_RATINGS_FOR_LEADERBOARD:
       rankings.append(
         UserRankingSummary(scope=scope, rank=None, total_eligible=0, avg_drip_score=round(avg, 2) if avg else None, rating_count=cnt)
@@ -232,12 +246,14 @@ async def get_my_rankings(
       .group_by(Outfit.user_id)
       .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
     )
-    if scope not in ("global", "country"):
+    if scope not in ("global", "country", "style") and not style_name:
       start, _ = _time_bounds(scope)
       if start:
         base = base.where(OutfitScore.created_at >= start)
     if country:
       base = base.join(UserProfile, UserProfile.user_id == Outfit.user_id).where(UserProfile.country == country)
+    if style_name:
+      base = base.where(cast(Outfit.style_tags, JSONB).contains([style_name]))
     subq = base.subquery()
     rank_stmt = select(subq).order_by(subq.c.avg_drip.desc())
     rres = await db.execute(rank_stmt)

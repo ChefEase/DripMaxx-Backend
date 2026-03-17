@@ -234,8 +234,6 @@ class UserSubscription(Base):
   user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
   plan = Column(Text, nullable=False, server_default=text("'free'"))  # free|monthly
   status = Column(Text, nullable=False, server_default=text("'inactive'"))  # inactive|active|trialing|past_due|canceled
-  stripe_customer_id = Column(Text, unique=True)
-  stripe_subscription_id = Column(Text, unique=True)
   current_period_start = Column(DateTime(timezone=True))
   current_period_end = Column(DateTime(timezone=True))
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

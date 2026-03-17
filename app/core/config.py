@@ -25,12 +25,6 @@ class Settings(BaseSettings):
   supabase_service_key: str | None = Field(default=None)
   supabase_bucket: str = Field(default="outfits")
 
-  stripe_secret_key: str | None = Field(default=None)
-  stripe_webhook_secret: str | None = Field(default=None)
-  stripe_monthly_price_id: str | None = Field(default=None)
-  stripe_success_url: str = Field(default="https://example.com/success")
-  stripe_cancel_url: str = Field(default="https://example.com/cancel")
-
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

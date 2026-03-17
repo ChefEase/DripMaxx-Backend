@@ -15,4 +15,3 @@ supabase==2.10.0
 pytest==8.3.3
 mediapipe==0.10.30
 aiosqlite==0.20.0
-stripe==11.1.0
