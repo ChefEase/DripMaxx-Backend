@@ -130,6 +130,26 @@ async def profile_history(user_id: str, db: AsyncSession = Depends(get_db)):
     for r in rec_res.fetchall()
   ]
 
+  best_stmt = (
+    select(Outfit.id, Outfit.image_url, Outfit.scanned_at, OutfitScore.drip_score)
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id == user_id)
+    .order_by(desc(OutfitScore.drip_score), desc(Outfit.scanned_at))
+    .limit(1)
+  )
+  best_res = await db.execute(best_stmt)
+  best_row = best_res.fetchone()
+  best_outfit = (
+    {
+      "id": str(best_row.id),
+      "image_url": best_row.image_url,
+      "scanned_at": best_row.scanned_at.isoformat() if best_row.scanned_at else None,
+      "drip_score": float(best_row.drip_score) if best_row.drip_score is not None else None,
+    }
+    if best_row
+    else None
+  )
+
   hist_stmt = (
     select(DripScoreHistory.recorded_at, DripScoreHistory.drip_score)
     .where(DripScoreHistory.user_id == user_id)
@@ -155,6 +175,7 @@ async def profile_history(user_id: str, db: AsyncSession = Depends(get_db)):
 
   return {
     "recent_outfits": recent,
+    "best_outfit": best_outfit,
     "history": list(reversed(history)),
     "profile_visibility": profile_visibility,
   }
