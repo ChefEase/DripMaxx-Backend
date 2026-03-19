@@ -1,5 +1,4 @@
 import json
-import io
 import time
 import re
 from typing import List, Tuple, Dict, Any
@@ -90,9 +89,13 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
 
 
 async def generate_suggestions(
-  breakdown: ScoreBreakdown, user_ctx: UserContext, image_bytes: bytes, image_url: str | None = None
+  breakdown: ScoreBreakdown,
+  user_ctx: UserContext,
+  image_bytes: bytes,
+  image_url: str | None = None,
+  visual_context: Dict[str, Any] | None = None,
 ) -> Tuple[List[SuggestionCard], str | None]:
-  """Generate dynamic suggestion cards and summary directly from the VLM."""
+  """Generate dynamic suggestion cards and summary from GPT-5.4 using grounded visual context."""
   if not settings.replicate_api_token:
     raise HTTPException(
       status_code=503,
@@ -114,19 +117,20 @@ async def generate_suggestions(
     "]"
     "}\n"
     "Rules:\n"
-    "- Base every summary and suggestion on the actual image plus the provided score breakdown.\n"
+    "- Base every summary and suggestion on the provided visual context plus the score breakdown.\n"
     "- The summary must mention at least one strength and one weakness.\n"
     "- Do not use placeholder words like 'dynamic title' or schema wording.\n"
     "- Do not use canned wording, templates, or generic fallback advice.\n"
-    "- Suggestions must be image-specific, concrete, and visually grounded.\n"
+    "- Suggestions must be concrete and visually grounded in the provided outfit details.\n"
     "- Return exactly 3 main_suggestions and exactly 2 optional_suggestions.\n"
     "- Keep titles short, natural, and editorial. Do not repeat the same noun across multiple suggestions unless absolutely necessary.\n"
     "- Avoid giving all five suggestions about the same issue. Spread them across color, fit, accessory, layering, or finish when possible.\n"
     "- If color is the weakest area, do not make more than two suggestions purely about color.\n"
     "- Use only the allowed types: fit, layering, color, accessory, other.\n"
-    "- Do not mention items that are not visible.\n"
+    "- Do not mention items that are not visible in the visual context.\n"
     "Output only JSON."
   )
+  visual_context_json = json.dumps(visual_context or {}, ensure_ascii=True, separators=(",", ":"))
   user_prompt = (
     f"User style prefs: {', '.join(user_ctx.style_preferences) or 'unspecified'}; "
     f"inspirations: {', '.join(user_ctx.style_inspirations) or 'unspecified'}; "
@@ -136,19 +140,15 @@ async def generate_suggestions(
     f"color_match={breakdown.color_match}, fit_quality={breakdown.fit_quality}, "
     f"body_compatibility={breakdown.body_compatibility}, trend_score={breakdown.trend_score}, "
     f"style_match={breakdown.style_match}. "
-    "Your response must be fully dynamic for this image and must not reuse stock phrases. "
+    f"Visual context JSON: {visual_context_json}. "
+    "Your response must be fully dynamic for this outfit and must not reuse stock phrases. "
     "If the outfit already has a strong base, acknowledge that and suggest refinements instead of acting like the whole look is bad. "
     "Output JSON only."
   )
 
   def _call_vlm(prompt: str, temperature: float):
     client = replicate.Client(api_token=settings.replicate_api_token, timeout=60)
-    model_ref = settings.replicate_vlm_model
-    image_input = image_url
-    if not image_input:
-      file_obj = io.BytesIO(image_bytes)
-      file_obj.name = "upload.jpg"
-      image_input = file_obj
+    model_ref = settings.replicate_llm_model
     tries = 0
     while True:
       tries += 1
@@ -156,11 +156,8 @@ async def generate_suggestions(
         result = client.run(
           model_ref,
           input={
-            "image": image_input,
             "prompt": prompt,
-            "temperature": temperature,
-            "top_p": 0.9,
-            "max_tokens": 800,
+            "reasoning_effort": "medium",
           },
         )
         break
@@ -236,5 +233,5 @@ async def generate_suggestions(
       status_code=502,
       detail="LLM suggestions unavailable; please retry shortly.",
     )
-  logger.debug(f"VLM suggestions dynamic {len(final)} items")
+  logger.debug(f"LLM suggestions dynamic {len(final)} items")
   return final, summary or None

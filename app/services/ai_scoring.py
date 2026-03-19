@@ -624,6 +624,7 @@ async def score_with_ai(
   breakdown = None
   breakdown_mode = "numeric"
   breakdown_flags: dict = {}
+  attr_data: Dict[str, Any] | None = None
   if settings.replicate_vlm_model:
     attrs = await _vlm_attributes(image_bytes, user_ctx, image_url)
     if attrs:
@@ -795,7 +796,13 @@ async def score_with_ai(
   quality_tier = _quality_tier(overall_score)
 
   # LLM suggestions (no heuristic fallback; propagate errors)
-  suggestions, summary = await generate_suggestions(breakdown, user_ctx, image_bytes, image_url)
+  suggestions, summary = await generate_suggestions(
+    breakdown,
+    user_ctx,
+    image_bytes,
+    image_url,
+    visual_context=attr_data,
+  )
   if not suggestions:
     raise HTTPException(
       status_code=status.HTTP_502_BAD_GATEWAY,
