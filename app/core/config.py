@@ -17,9 +17,7 @@ class Settings(BaseSettings):
     default="krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4"
   )
   replicate_llm_model: str = Field(default="openai/gpt-5.4")
-  replicate_vlm_model: str = Field(
-    default="chefease/fashionvlmodel:7f22da0c6e72f395e33b12c0467c9d9d158cbed71ca391e84c8704ef656c2609"
-  )
+  replicate_vlm_model: str = Field(default="openai/gpt-5.4")
   database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres")
   supabase_url: str | None = Field(default=None)
   supabase_service_key: str | None = Field(default=None)

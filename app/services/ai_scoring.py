@@ -25,7 +25,7 @@ DEFAULT_MODEL_REF = (
   "krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4"
 )
 SAM_MODEL_REF = "meta/sam-2:fe97b453a6455861e3bac769b441ca1f1086110da7466dbb65cf1eecfd60dc83"
-VLM_MODEL_REF_DEFAULT = "chefease/fashionvlmodel:7f22da0c6e72f395e33b12c0467c9d9d158cbed71ca391e84c8704ef656c2609"
+VLM_MODEL_REF_DEFAULT = "openai/gpt-5.4"
 STYLE_PROMPTS = [
   "streetwear outfit photo",
   "minimalist outfit photo",
@@ -506,11 +506,12 @@ async def _vlm_attributes(
         res = client.run(
           model_ref,
           input={
-            "image": image_input,
-            "prompt": sys_prompt + "\n\n" + user_prompt,
-            "temperature": 0.2,
-            "top_p": 0.9,
-            "max_tokens": 400,
+            "system_prompt": sys_prompt,
+            "prompt": user_prompt,
+            "image_input": [image_input],
+            "verbosity": "low",
+            "reasoning_effort": "low",
+            "max_completion_tokens": 800,
           },
         )
         break
