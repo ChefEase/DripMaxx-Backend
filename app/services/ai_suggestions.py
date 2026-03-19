@@ -42,6 +42,18 @@ def _too_similar(a: str, b: str) -> bool:
   return overlap > 0.85
 
 
+def _looks_placeholder(text: str) -> bool:
+  lowered = text.strip().lower()
+  banned_phrases = {
+    "dynamic title",
+    "specific outfit change based on the image",
+    "suggestion title",
+    "optional suggestion",
+    "main suggestion",
+  }
+  return lowered in banned_phrases or lowered.startswith("dynamic ")
+
+
 def _is_valid_detection(detection: Dict[str, Any]) -> bool:
   if not isinstance(detection, dict):
     return False
@@ -54,6 +66,8 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
     return False
   if len(main_suggestions) != 3 or len(optional_suggestions) != 2:
     return False
+  color_count = 0
+  seen_texts = []
   for item in [*main_suggestions, *optional_suggestions]:
     if not isinstance(item, dict):
       return False
@@ -62,6 +76,16 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
     description = item.get("description")
     if not (isinstance(title, str) and title.strip() and isinstance(type_name, str) and type_name.strip() and isinstance(description, str) and description.strip()):
       return False
+    if _looks_placeholder(title) or _looks_placeholder(description):
+      return False
+    if type_name.strip().lower() == "color":
+      color_count += 1
+    text = f"{title} {description}"
+    if any(_too_similar(text, existing) for existing in seen_texts):
+      return False
+    seen_texts.append(text)
+  if color_count > 2:
+    return False
   return True
 
 
@@ -78,21 +102,27 @@ async def generate_suggestions(
   sys_prompt = (
     "Look at the image and output ONLY JSON with dynamic suggestion cards and a summary:\n"
     "{"
-    "\"summary\": \"one sentence about this specific outfit\","
+    "\"summary\": \"two short sentences: one on what works, one on what to improve\","
     "\"main_suggestions\": ["
-    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+    "{\"title\": \"Sharpen the boot contrast\", \"type\": \"color\", \"description\": \"Keep the dark boots, but break the blue stack with a lighter or textured mid-layer so the outfit reads intentional instead of flat.\"},"
+    "{\"title\": \"Clean up the silhouette\", \"type\": \"fit\", \"description\": \"Tighten the line at either the top or bottom so the shape feels more deliberate and less uniform.\"},"
+    "{\"title\": \"Add one focal detail\", \"type\": \"accessory\", \"description\": \"Introduce one visible detail such as a watch, chain, or structured outer layer so the outfit has a point of interest.\"}"
     "],"
     "\"optional_suggestions\": ["
-    "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+    "{\"title\": \"Break up the palette\", \"type\": \"color\", \"description\": \"Swap one blue piece for charcoal, grey, or off-white so the outfit keeps its clean mood without looking one-note.\"},"
+    "{\"title\": \"Refine the finish\", \"type\": \"other\", \"description\": \"Choose one cleaner fabric or sharper hem so the look feels more premium overall.\"}"
     "]"
     "}\n"
     "Rules:\n"
     "- Base every summary and suggestion on the actual image plus the provided score breakdown.\n"
+    "- The summary must mention at least one strength and one weakness.\n"
+    "- Do not use placeholder words like 'dynamic title' or schema wording.\n"
     "- Do not use canned wording, templates, or generic fallback advice.\n"
     "- Suggestions must be image-specific, concrete, and visually grounded.\n"
     "- Return exactly 3 main_suggestions and exactly 2 optional_suggestions.\n"
+    "- Keep titles short, natural, and editorial. Do not repeat the same noun across multiple suggestions unless absolutely necessary.\n"
+    "- Avoid giving all five suggestions about the same issue. Spread them across color, fit, accessory, layering, or finish when possible.\n"
+    "- If color is the weakest area, do not make more than two suggestions purely about color.\n"
     "- Use only the allowed types: fit, layering, color, accessory, other.\n"
     "- Do not mention items that are not visible.\n"
     "Output only JSON."
@@ -107,6 +137,7 @@ async def generate_suggestions(
     f"body_compatibility={breakdown.body_compatibility}, trend_score={breakdown.trend_score}, "
     f"style_match={breakdown.style_match}. "
     "Your response must be fully dynamic for this image and must not reuse stock phrases. "
+    "If the outfit already has a strong base, acknowledge that and suggest refinements instead of acting like the whole look is bad. "
     "Output JSON only."
   )
 
@@ -155,21 +186,22 @@ async def generate_suggestions(
     repair_prompt = (
       "Fix and return ONLY valid JSON for this schema:\n"
       "{"
-      "\"summary\": \"one sentence about this specific outfit\","
+      "\"summary\": \"two short sentences: one on what works, one on what to improve\","
       "\"main_suggestions\": ["
-      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
       "],"
       "\"optional_suggestions\": ["
-      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"dynamic title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
+      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
       "]"
       "}\n"
       "Rules:\n"
       "- summary must be non-empty.\n"
       "- main_suggestions must contain exactly 3 valid suggestion objects.\n"
       "- optional_suggestions must contain exactly 2 valid suggestion objects.\n"
+      "- reject placeholder titles or repeated suggestions.\n"
       "- Output only JSON.\n\n"
       f"RAW:\n{raw}"
     )
