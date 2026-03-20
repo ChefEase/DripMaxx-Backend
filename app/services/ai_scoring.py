@@ -144,8 +144,92 @@ def _eval_style_match(user_styles: List[str], style_probs: Dict[str, float]) -> 
   return _clamp(5.5 + min(4.0, total * 4.0))
 
 
-def _eval_body_compatibility(fit_score: float) -> float:
-  return _clamp(fit_score - 0.3)
+def _normalize_height_bucket(height_text: str) -> str:
+  text = (height_text or "").strip().lower()
+  if not text:
+    return "unknown"
+  short_markers = ("4'", "5'0", "5'1", "5'2", "5'3", "5'4", "5'5", "5 ft", "160", "161", "162", "163", "164", "165")
+  tall_markers = ("6'", "6'0", "6'1", "6'2", "6'3", "6'4", "183", "184", "185", "186", "187", "188", "189", "190")
+  if any(marker in text for marker in short_markers):
+    return "short"
+  if any(marker in text for marker in tall_markers):
+    return "tall"
+  return "average"
+
+
+def _eval_body_compatibility(
+  body_type: str,
+  user_height: str,
+  gender_style: str,
+  fit_style: str,
+  silhouette: str,
+  detected_items: List[str],
+  trend_hits: List[str],
+  layer_count: int,
+) -> float:
+  score = 6.2
+  body_type = (body_type or "").strip().lower()
+  height_bucket = _normalize_height_bucket(user_height)
+  gender_style = (gender_style or "").strip().lower()
+  items = {str(item).strip().lower() for item in detected_items if str(item).strip()}
+  trend_set = {str(hit).strip().lower() for hit in trend_hits if str(hit).strip()}
+
+  if fit_style in ("balanced", "tailored", "structured"):
+    score += 0.8
+  elif fit_style in ("relaxed", "fitted"):
+    score += 0.3
+  elif fit_style in ("extremely_baggy", "extremely_tight"):
+    score -= 1.2
+
+  if silhouette == "balanced":
+    score += 0.9
+  elif silhouette == "imbalanced":
+    score -= 1.0
+
+  if body_type == "slim":
+    if fit_style in ("tailored", "balanced", "layered"):
+      score += 0.6
+    if fit_style == "extremely_baggy":
+      score -= 0.8
+  elif body_type == "athletic":
+    if fit_style in ("balanced", "relaxed", "structured"):
+      score += 0.6
+    if fit_style == "extremely_tight":
+      score -= 0.6
+  elif body_type == "broad":
+    if fit_style in ("structured", "tailored", "balanced"):
+      score += 0.7
+    if "blazer" in items or "jacket" in items or "coat" in items:
+      score += 0.3
+    if fit_style == "extremely_tight":
+      score -= 0.7
+  elif body_type == "plus_size":
+    if fit_style in ("balanced", "structured", "tailored"):
+      score += 0.8
+    if silhouette == "balanced":
+      score += 0.4
+    if fit_style == "extremely_tight":
+      score -= 0.9
+
+  if height_bucket == "short":
+    if fit_style == "extremely_baggy":
+      score -= 0.8
+    if "vertical_stripes" in trend_set or silhouette == "balanced":
+      score += 0.4
+  elif height_bucket == "tall":
+    if fit_style in ("relaxed", "balanced", "structured"):
+      score += 0.3
+    if layer_count >= 2:
+      score += 0.2
+
+  if gender_style in ("menswear", "men", "male"):
+    if fit_style in ("structured", "tailored", "balanced"):
+      score += 0.2
+  elif gender_style in ("womenswear", "women", "female"):
+    if fit_style in ("fitted", "tailored", "balanced"):
+      score += 0.2
+
+  return _clamp(score)
 
 
 def _quality_tier(overall: float) -> str:
@@ -724,7 +808,16 @@ async def score_with_ai(
           for k in list(style_probs.keys()):
             style_probs[k] = style_probs[k] / total
       style_score = _eval_style_match(user_ctx.style_preferences or [], style_probs)
-      body_score = _eval_body_compatibility(fit_score)
+      body_score = _eval_body_compatibility(
+        user_ctx.user_body_type or "",
+        user_ctx.user_height or "",
+        user_ctx.gender_style_preference or "",
+        fit_style,
+        silhouette,
+        detected_items,
+        trend_hits,
+        layer_count,
+      )
       breakdown = ScoreBreakdown(
         color_match=color_score,
         fit_quality=fit_score,
