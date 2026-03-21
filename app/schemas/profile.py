@@ -23,6 +23,15 @@ class ProfileSyncResponse(BaseModel):
   user_id: str
 
 
+class DeleteAccountRequest(BaseModel):
+  user_id: str
+
+
+class DeleteAccountResponse(BaseModel):
+  ok: bool
+  auth_deleted: bool
+
+
 class OutfitSummary(BaseModel):
   id: str
   image_url: Optional[str] = None

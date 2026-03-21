@@ -1,14 +1,23 @@
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
+from supabase import create_client as create_supabase_client
 
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.models.entities import User, UserProfile, Outfit, OutfitScore, DripScoreHistory, StyleDNA
-from app.schemas.profile import ProfileSyncRequest, ProfileSyncResponse, StyleDNAResponse
+from app.schemas.profile import (
+  DeleteAccountRequest,
+  DeleteAccountResponse,
+  ProfileSyncRequest,
+  ProfileSyncResponse,
+  StyleDNAResponse,
+)
 
 router = APIRouter(prefix="/v1/profile", tags=["profile"])
+settings = get_settings()
 
 
 def _visibility_flag(value: str | None) -> bool:
@@ -103,6 +112,32 @@ async def sync_profile(payload: ProfileSyncRequest, db: AsyncSession = Depends(g
     await db.rollback()
     raise HTTPException(status_code=409, detail="Username already taken")
   return ProfileSyncResponse(user_id=user_id)
+
+
+@router.post("/delete-account", response_model=DeleteAccountResponse)
+async def delete_account(payload: DeleteAccountRequest, db: AsyncSession = Depends(get_db)):
+  user_id = (payload.user_id or "").strip()
+  if not user_id:
+    raise HTTPException(status_code=400, detail="user_id is required")
+
+  stmt = select(User).where(User.id == user_id)
+  res = await db.execute(stmt)
+  user = res.scalar_one_or_none()
+  if not user:
+    raise HTTPException(status_code=404, detail="User not found")
+
+  auth_deleted = False
+  if settings.supabase_url and settings.supabase_service_key:
+    try:
+      admin_client = create_supabase_client(settings.supabase_url, settings.supabase_service_key)
+      admin_client.auth.admin.delete_user(user_id)
+      auth_deleted = True
+    except Exception as exc:
+      logger.warning(f"Supabase auth delete failed for user_id={user_id}: {exc}")
+
+  await db.delete(user)
+  await db.commit()
+  return DeleteAccountResponse(ok=True, auth_deleted=auth_deleted)
 
 
 @router.get("/history", response_model=dict)
