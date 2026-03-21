@@ -4,12 +4,13 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Outfit, OutfitScore, UserSubscription
+from app.models import Outfit, OutfitScore, User, UserSubscription
 
 FREE_FIRST_SCANS = 5
 FREE_REFRESH_LIMIT = 1
 FREE_REFRESH_WINDOW = timedelta(days=3)
 PAID_MONTHLY_LIMIT = 999999
+REVIEWER_EMAIL = "onyiakamsy74@gmail.com"
 
 
 def _month_start_utc(now: datetime) -> datetime:
@@ -18,6 +19,25 @@ def _month_start_utc(now: datetime) -> datetime:
 
 async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
   now = datetime.now(timezone.utc)
+  user_stmt = select(User.email).where(User.id == user_id)
+  try:
+    user_res = await db.execute(user_stmt)
+    user_email = str(user_res.scalar() or "").strip().lower()
+  except SQLAlchemyError:
+    await db.rollback()
+    user_email = ""
+
+  if user_email == REVIEWER_EMAIL:
+    return {
+      "plan": "monthly",
+      "subscription_status": "active",
+      "limit_type": "reviewer_unlimited",
+      "limit": PAID_MONTHLY_LIMIT,
+      "used": 0,
+      "remaining": PAID_MONTHLY_LIMIT,
+      "allowed": True,
+    }
+
   sub_stmt = select(UserSubscription).where(UserSubscription.user_id == user_id)
   try:
     sub_res = await db.execute(sub_stmt)
