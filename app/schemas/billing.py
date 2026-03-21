@@ -9,3 +9,19 @@ class BillingStatusResponse(BaseModel):
   limit: int
   used: int
   remaining: int
+
+
+class VerifyPurchaseRequest(BaseModel):
+  user_id: str
+  platform: str
+  product_id: str
+  purchase_token: str | None = None
+  transaction_id: str | None = None
+
+
+class VerifyPurchaseResponse(BaseModel):
+  ok: bool
+  plan: str
+  subscription_status: str
+  current_period_end: str | None = None
+  mode: str

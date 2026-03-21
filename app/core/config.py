@@ -22,6 +22,9 @@ class Settings(BaseSettings):
   supabase_url: str | None = Field(default=None)
   supabase_service_key: str | None = Field(default=None)
   supabase_bucket: str = Field(default="outfits")
+  billing_dev_mode: bool = Field(default=False)
+  premium_monthly_product_id_android: str = Field(default="dripmaxx_premium_monthly")
+  premium_monthly_product_id_ios: str = Field(default="dripmaxx_premium_monthly")
 
 
 @lru_cache(maxsize=1)
