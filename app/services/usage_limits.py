@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Outfit, OutfitScore, UserSubscription
 
-FREE_FIRST_SCANS = 3
-FREE_DAILY_LIMIT = 1
+FREE_FIRST_SCANS = 5
+FREE_REFRESH_LIMIT = 1
+FREE_REFRESH_WINDOW = timedelta(days=3)
 PAID_MONTHLY_LIMIT = 999999
 
 
@@ -38,7 +39,6 @@ async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
     limit = PAID_MONTHLY_LIMIT
     limit_type = "unlimited"
   else:
-    rolling_start = now.replace(microsecond=0) - timedelta(hours=24)
     total_count_stmt = (
       select(func.count(OutfitScore.id))
       .join(Outfit, Outfit.id == OutfitScore.outfit_id)
@@ -50,15 +50,15 @@ async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
       total_used = int(total_res.scalar() or 0)
     except SQLAlchemyError:
       await db.rollback()
-    # Every user gets their first 3 scans total. After that, 1 scan per rolling 24h.
+    # Every user gets their first 5 scans total. After that, 1 scan per rolling 3 days.
     if total_used < FREE_FIRST_SCANS:
       start = datetime(1970, 1, 1, tzinfo=timezone.utc)
       limit = FREE_FIRST_SCANS
       limit_type = "first_scans"
     else:
-      start = rolling_start
-      limit = FREE_DAILY_LIMIT
-      limit_type = "daily"
+      start = now.replace(microsecond=0) - FREE_REFRESH_WINDOW
+      limit = FREE_REFRESH_LIMIT
+      limit_type = "rolling_3_day"
 
   count_stmt = (
     select(func.count(OutfitScore.id))
