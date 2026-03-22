@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.exc import IntegrityError
@@ -31,6 +33,33 @@ def _visibility_mode(value: str | None) -> str:
   if value in ("public", "friends_only", "private"):
     return value
   return "public"
+
+
+def _storage_path_from_url(image_url: str | None, bucket: str) -> str | None:
+  if not image_url or image_url.startswith("uploaded://"):
+    return None
+  try:
+    parsed = urlparse(image_url)
+    marker = f"/storage/v1/object/public/{bucket}/"
+    if marker in parsed.path:
+      return parsed.path.split(marker, 1)[1]
+  except Exception:
+    return None
+  return None
+
+
+def _delete_storage_objects(paths: list[str]) -> None:
+  if not paths or not settings.supabase_url or not settings.supabase_service_key:
+    return
+  client = create_supabase_client(settings.supabase_url, settings.supabase_service_key)
+  bucket = settings.supabase_bucket or "outfits"
+  unique_paths = list(dict.fromkeys([p for p in paths if p]))
+  for idx in range(0, len(unique_paths), 100):
+    batch = unique_paths[idx : idx + 100]
+    try:
+      client.storage.from_(bucket).remove(batch)
+    except Exception as exc:
+      logger.warning(f"Supabase storage delete failed for batch size={len(batch)}: {exc}")
 
 
 async def _get_or_create_user(
@@ -125,6 +154,20 @@ async def delete_account(payload: DeleteAccountRequest, db: AsyncSession = Depen
   user = res.scalar_one_or_none()
   if not user:
     raise HTTPException(status_code=404, detail="User not found")
+
+  bucket = settings.supabase_bucket or "outfits"
+  outfit_stmt = select(Outfit.image_url).where(Outfit.user_id == user_id)
+  outfit_res = await db.execute(outfit_stmt)
+  storage_paths = [
+    path
+    for path in (
+      _storage_path_from_url(str(row[0]) if row[0] is not None else None, bucket)
+      for row in outfit_res.fetchall()
+    )
+    if path
+  ]
+
+  _delete_storage_objects(storage_paths)
 
   auth_deleted = False
   if settings.supabase_url and settings.supabase_service_key:
