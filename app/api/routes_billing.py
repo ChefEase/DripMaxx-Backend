@@ -43,9 +43,11 @@ def _parse_google_datetime(value: str | None) -> datetime | None:
 def _resolve_service_account_file() -> Path:
   if not settings.google_play_service_account_file:
     raise HTTPException(status_code=500, detail="GOOGLE_PLAY_SERVICE_ACCOUNT_FILE is not configured.")
-  raw_path = Path(settings.google_play_service_account_file).expanduser()
+  raw_path = Path(settings.google_play_service_account_file.strip()).expanduser()
   if raw_path.is_absolute():
-    return raw_path
+    return raw_path.resolve()
+  if raw_path.exists():
+    return raw_path.resolve()
   api_root = Path(__file__).resolve().parents[2]
   return (api_root / raw_path).resolve()
 
