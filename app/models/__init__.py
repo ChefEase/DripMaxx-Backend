@@ -17,6 +17,7 @@ from app.models.entities import (
   RankingGroup,
   RankingGroupMember,
   UserSubscription,
+  BillingReceipt,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
   "RankingGroup",
   "RankingGroupMember",
   "UserSubscription",
+  "BillingReceipt",
 ]

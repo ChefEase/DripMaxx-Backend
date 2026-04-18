@@ -3,9 +3,8 @@ import logging
 
 from fastapi import APIRouter, File, UploadFile, Depends, HTTPException, status, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import uuid
 
+from app.core.auth import AuthContext, require_auth
 from app.schemas.outfits import ScoreResponse, UserContext
 from app.db.session import get_db
 from app.services.ai_scoring import score_with_ai
@@ -25,6 +24,7 @@ logger = logging.getLogger(__name__)
 async def score_outfit(
   image: UploadFile = File(...),
   user_context: str = Form(..., description="JSON of user context"),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
   if not image.content_type or not image.content_type.startswith("image/"):
@@ -45,10 +45,11 @@ async def score_outfit(
       detail=f"Invalid user_context JSON: {exc}",
     ) from exc
 
-  if not user_ctx.user_id:
-    raise HTTPException(status_code=400, detail="Sign in is required before scanning.")
+  if user_ctx.user_id and user_ctx.user_id != auth.app_user_id:
+    raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+  user_id = auth.app_user_id
 
-  quota = await get_scan_quota(db, user_ctx.user_id)
+  quota = await get_scan_quota(db, user_id)
   if not quota["allowed"]:
     raise HTTPException(
       status_code=402,
@@ -69,21 +70,19 @@ async def score_outfit(
   # Persist outfit first to get outfit_id, then upload image
   style_tags = list(user_ctx.style_preferences) if user_ctx.style_preferences else []
   outfit = Outfit(
-    user_id=None,
+    user_id=user_id,
     style_tags=style_tags,
     source="upload",
     image_url="uploaded://not-stored",
     notes=None,
     is_example=False,
   )
-  if user_ctx.user_id:
-    outfit.user_id = user_ctx.user_id
   db.add(outfit)
   await db.flush()
 
   # Upload image to Supabase Storage (before AI so AI can use URL)
   content_type = image.content_type or "image/jpeg"
-  image_url = upload_outfit_image(image_bytes, outfit.id, user_ctx.user_id, content_type)
+  image_url = upload_outfit_image(image_bytes, outfit.id, user_id, content_type)
   if image_url:
     outfit.image_url = image_url
   else:
@@ -110,7 +109,7 @@ async def score_outfit(
 
   db.add(
     DripScoreHistory(
-      user_id=user_ctx.user_id,
+      user_id=user_id,
       outfit_id=outfit.id,
       drip_score=score.drip_score,
     )

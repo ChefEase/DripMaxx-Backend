@@ -232,6 +232,71 @@ def _eval_body_compatibility(
   return _clamp(score)
 
 
+def _styling_adjustments(
+  detected_items: List[str],
+  trend_hits: List[str],
+  top_type: str,
+  shoe_type: str,
+  layer_count: int,
+  fit_style: str,
+  silhouette: str,
+) -> Dict[str, float]:
+  items = {str(item).strip().lower() for item in detected_items if str(item).strip()}
+  top = (top_type or "").strip().lower()
+  shoes = (shoe_type or "").strip().lower()
+  trend_set = {str(hit).strip().lower() for hit in trend_hits if str(hit).strip()}
+
+  accessories_present = any(
+    token in items
+    for token in {
+      "watch", "bracelet", "chain", "necklace", "ring", "earrings", "jewelry",
+      "bag", "scarf", "beads", "durag", "head tie", "headtie", "bandana", "belt",
+      "hat", "cap", "beanie",
+    }
+  )
+  elevated_accessories = any(
+    token in items for token in {"watch", "bracelet", "chain", "necklace", "ring", "earrings", "jewelry", "scarf", "belt", "bag"}
+  )
+  headwear_present = any(token in items for token in {"hat", "cap", "beanie", "durag", "head tie", "headtie", "bandana"})
+  formal_top = any(token in top for token in {"suit", "blazer", "dress shirt", "button-up", "button up", "button-down", "button down", "tie"})
+  casual_top = any(token in top for token in {"t-shirt", "tee", "hoodie", "sweatshirt"})
+  visible_layering = layer_count >= 2 or "inner layer" in trend_set or "layered" in trend_set
+
+  fit_bonus = 0.0
+  trend_bonus = 0.0
+  style_bonus = 0.0
+
+  if accessories_present:
+    style_bonus += 0.3
+    trend_bonus += 0.2
+  if elevated_accessories and silhouette == "balanced":
+    style_bonus += 0.4
+  if visible_layering and casual_top:
+    fit_bonus += 0.3
+    style_bonus += 0.5
+    trend_bonus += 0.4
+  if visible_layering and fit_style in ("balanced", "tailored", "structured"):
+    style_bonus += 0.2
+
+  if formal_top and headwear_present and not any(token in items for token in {"beret", "fedora"}):
+    style_bonus -= 0.9
+    trend_bonus -= 0.6
+  if formal_top and shoes in {"", "none", "barefoot", "socks"}:
+    fit_bonus -= 0.5
+    style_bonus -= 0.6
+  elif shoes in {"", "none", "barefoot", "socks"}:
+    fit_bonus -= 0.3
+    style_bonus -= 0.2
+  if casual_top and visible_layering:
+    trend_bonus += 0.2
+
+  return {
+    "fit": fit_bonus,
+    "trend": trend_bonus,
+    "style": style_bonus,
+  }
+
+
 def _quality_tier(overall: float) -> str:
   if overall >= 9.0:
     return "Top_Notch"
@@ -548,6 +613,7 @@ async def _vlm_attributes(
     "\"top_type\": \"\","
     "\"pants_type\": \"\","
     "\"shoe_type\": \"\","
+    "\"accessories\": [\"watch\",\"chain\"],"
     "\"top_color\": \"\","
     "\"pants_color\": \"\","
     "\"shoe_color\": \"\","
@@ -561,7 +627,7 @@ async def _vlm_attributes(
     "\"silhouette_balance\": \"balanced|imbalanced\","
     "\"style_probs\": {\"streetwear\":0.0,\"minimal\":0.0,\"casual\":0.0,\"luxury\":0.0,\"vintage\":0.0,\"y2k\":0.0,\"athleisure\":0.0,\"smart_casual\":0.0,\"experimental\":0.0},"
     "\"trend_hits\": [\"relaxed_denim\",\"oversized_hoodies\"],"
-    "\"detected_items\": [\"hoodie\",\"jeans\",\"sneakers\"],"
+    "\"detected_items\": [\"hoodie\",\"jeans\",\"sneakers\",\"watch\"],"
     "\"penalties\": {"
     "\"excessive_monochrome\": true|false,"
     "\"neon_colors\": true|false,"
@@ -721,6 +787,10 @@ async def score_with_ai(
           detail="No outfit, no rating.",
         )
       detected_items = [str(x).lower() for x in (attr_data.get("detected_items") or [])]
+      detected_items.extend(
+        [str(x).lower() for x in (attr_data.get("accessories") or []) if isinstance(x, str)]
+      )
+      detected_items = list(dict.fromkeys([x for x in detected_items if x]))
       top_type = str(attr_data.get("top_type") or "").strip().lower()
       pants_type = str(attr_data.get("pants_type") or "").strip().lower()
       shoe_type = str(attr_data.get("shoe_type") or "").strip().lower()
@@ -777,6 +847,17 @@ async def score_with_ai(
       color_score = _eval_color_score(palette, breakdown_flags)
       fit_score = _eval_fit_score(fit_style, silhouette, (user_ctx.user_body_type or "").lower())
       trend_score = _eval_trend_score(detected_items, trend_hits, breakdown_flags)
+      styling_adj = _styling_adjustments(
+        detected_items,
+        trend_hits,
+        top_type,
+        shoe_type,
+        layer_count,
+        fit_style,
+        silhouette,
+      )
+      fit_score = _clamp(fit_score + styling_adj["fit"])
+      trend_score = _clamp(trend_score + styling_adj["trend"])
       # Fallback style probs if classifier is empty
       if isinstance(style_probs, dict):
         max_prob = max(style_probs.values() or [0.0])
@@ -808,6 +889,7 @@ async def score_with_ai(
           for k in list(style_probs.keys()):
             style_probs[k] = style_probs[k] / total
       style_score = _eval_style_match(user_ctx.style_preferences or [], style_probs)
+      style_score = _clamp(style_score + styling_adj["style"])
       body_score = _eval_body_compatibility(
         user_ctx.user_body_type or "",
         user_ctx.user_height or "",

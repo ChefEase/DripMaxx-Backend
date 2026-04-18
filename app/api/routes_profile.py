@@ -8,6 +8,7 @@ from loguru import logger
 from supabase import create_client as create_supabase_client
 
 from app.core.config import get_settings
+from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
 from app.models.entities import User, UserProfile, Outfit, OutfitScore, DripScoreHistory, StyleDNA
 from app.schemas.profile import (
@@ -65,6 +66,7 @@ def _delete_storage_objects(paths: list[str]) -> None:
 async def _get_or_create_user(
   db: AsyncSession,
   user_id: str,
+  auth_id: str | None = None,
   email: str | None = None,
   display_name: str | None = None,
   username: str | None = None,
@@ -73,22 +75,31 @@ async def _get_or_create_user(
   res = await db.execute(stmt)
   user = res.scalar_one_or_none()
   if user:
+    if auth_id and not user.auth_id:
+      user.auth_id = auth_id
     return user
-  user = User(id=user_id, email=email, display_name=display_name, username=username)
+  user = User(id=user_id, auth_id=auth_id, email=email, display_name=display_name, username=username)
   db.add(user)
   await db.flush()
   return user
 
 
-@router.post("/sync", response_model=ProfileSyncResponse)
-async def sync_profile(payload: ProfileSyncRequest, db: AsyncSession = Depends(get_db)):
-  user_id = payload.user_id
+def _require_actor_user_id(auth: AuthContext, claimed_user_id: str | None) -> str:
+  if claimed_user_id and claimed_user_id.strip() and claimed_user_id != auth.app_user_id:
+    raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+  return auth.app_user_id
 
-  if not user_id:
-    raise HTTPException(status_code=400, detail="user_id is required")
+
+@router.post("/sync", response_model=ProfileSyncResponse)
+async def sync_profile(
+  payload: ProfileSyncRequest,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  user_id = _require_actor_user_id(auth, payload.user_id)
 
   # Upsert user
-  user = await _get_or_create_user(db, user_id, payload.email, payload.display_name, payload.username)
+  user = await _get_or_create_user(db, user_id, auth.auth_user_id, payload.email, payload.display_name, payload.username)
   if payload.username:
     normalized_username = payload.username.strip().lower()
     user.username = normalized_username
@@ -144,10 +155,12 @@ async def sync_profile(payload: ProfileSyncRequest, db: AsyncSession = Depends(g
 
 
 @router.post("/delete-account", response_model=DeleteAccountResponse)
-async def delete_account(payload: DeleteAccountRequest, db: AsyncSession = Depends(get_db)):
-  user_id = (payload.user_id or "").strip()
-  if not user_id:
-    raise HTTPException(status_code=400, detail="user_id is required")
+async def delete_account(
+  payload: DeleteAccountRequest,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  user_id = _require_actor_user_id(auth, payload.user_id)
 
   stmt = select(User).where(User.id == user_id)
   res = await db.execute(stmt)
@@ -173,7 +186,7 @@ async def delete_account(payload: DeleteAccountRequest, db: AsyncSession = Depen
   if settings.supabase_url and settings.supabase_service_key:
     try:
       admin_client = create_supabase_client(settings.supabase_url, settings.supabase_service_key)
-      admin_client.auth.admin.delete_user(user_id)
+      admin_client.auth.admin.delete_user(auth.auth_user_id)
       auth_deleted = True
     except Exception as exc:
       logger.warning(f"Supabase auth delete failed for user_id={user_id}: {exc}")
@@ -184,11 +197,13 @@ async def delete_account(payload: DeleteAccountRequest, db: AsyncSession = Depen
 
 
 @router.get("/history", response_model=dict)
-async def profile_history(user_id: str, db: AsyncSession = Depends(get_db)):
+async def profile_history(
+  user_id: str | None = None,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
   """Return recent outfits and drip score history for a user."""
-  if not user_id:
-    raise HTTPException(status_code=400, detail="user_id is required")
-  await _get_or_create_user(db, user_id)
+  user_id = _require_actor_user_id(auth, user_id)
 
   rec_stmt = (
     select(Outfit.id, Outfit.image_url, Outfit.scanned_at, OutfitScore.drip_score)
@@ -260,11 +275,12 @@ async def profile_history(user_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/style_dna", response_model=StyleDNAResponse)
-async def style_dna(user_id: str, db: AsyncSession = Depends(get_db)):
-  if not user_id:
-    raise HTTPException(status_code=400, detail="user_id is required")
-
-  await _get_or_create_user(db, user_id)
+async def style_dna(
+  user_id: str | None = None,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  user_id = _require_actor_user_id(auth, user_id)
   # Try to load existing
   existing_stmt = select(StyleDNA).where(StyleDNA.user_id == user_id)
   res = await db.execute(existing_stmt)

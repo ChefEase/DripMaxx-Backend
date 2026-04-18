@@ -36,7 +36,7 @@ class UserRankingsResponse(BaseModel):
 
 class CreateGroupRequest(BaseModel):
   name: str
-  user_id: str
+  user_id: str | None = None
 
 
 class CreateGroupResponse(BaseModel):
@@ -47,7 +47,7 @@ class CreateGroupResponse(BaseModel):
 
 class JoinGroupRequest(BaseModel):
   code: str
-  user_id: str
+  user_id: str | None = None
 
 
 class JoinGroupResponse(BaseModel):

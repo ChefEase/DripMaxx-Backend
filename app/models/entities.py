@@ -238,3 +238,22 @@ class UserSubscription(Base):
   current_period_end = Column(DateTime(timezone=True))
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
   updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BillingReceipt(Base):
+  __tablename__ = "billing_receipts"
+  __table_args__ = (
+    UniqueConstraint("platform", "purchase_token", name="uq_billing_receipts_purchase_token"),
+    UniqueConstraint("platform", "transaction_id", name="uq_billing_receipts_transaction_id"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+  platform = Column(Text, nullable=False)
+  product_id = Column(Text, nullable=False)
+  purchase_token = Column(Text)
+  transaction_id = Column(Text)
+  raw_receipt = Column(JSON, nullable=False, server_default=text("'{}'"))
+  verified_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  expires_at = Column(DateTime(timezone=True))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

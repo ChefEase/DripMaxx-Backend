@@ -21,8 +21,11 @@ class Settings(BaseSettings):
   database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres")
   supabase_url: str | None = Field(default=None)
   supabase_service_key: str | None = Field(default=None)
+  supabase_anon_key: str | None = Field(default=None)
   supabase_bucket: str = Field(default="outfits")
   billing_dev_mode: bool = Field(default=False)
+  google_play_package_name: str | None = Field(default=None)
+  google_play_service_account_file: str | None = Field(default=None)
   premium_monthly_product_id_android: str = Field(default="dripmaxx_premium_monthly")
   premium_monthly_product_id_ios: str = Field(default="dripmaxx_premium_monthly")
 

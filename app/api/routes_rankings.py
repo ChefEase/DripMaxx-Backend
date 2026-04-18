@@ -3,40 +3,49 @@
 import logging
 import secrets
 import string
-from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, and_, desc, cast
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, cast, desc, func, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy.dialects.postgresql import JSONB
+from app.core.auth import AuthContext, optional_auth, require_auth
 from app.db.session import get_db
 from app.models import (
-  User,
-  UserProfile,
   Outfit,
   OutfitScore,
   RankingGroup,
   RankingGroupMember,
+  User,
+  UserProfile,
 )
 from app.schemas.rankings import (
+  CreateGroupRequest,
+  CreateGroupResponse,
+  GroupDetailsResponse,
+  GroupMemberStanding,
+  GroupSummary,
+  JoinGroupRequest,
+  JoinGroupResponse,
   LeaderboardEntry,
   LeaderboardResponse,
   UserRankingSummary,
   UserRankingsResponse,
-  CreateGroupRequest,
-  CreateGroupResponse,
-  JoinGroupRequest,
-  JoinGroupResponse,
-  GroupSummary,
-  GroupDetailsResponse,
-  GroupMemberStanding,
 )
+
 
 router = APIRouter(prefix="/v1/rankings", tags=["rankings"])
 logger = logging.getLogger(__name__)
 MIN_RATINGS_FOR_LEADERBOARD = 10
 STYLE_SCOPES = ["Streetwear", "Minimal", "Vintage", "Luxury", "Y2K", "Casual"]
+
+
+def _require_actor_user_id(auth: AuthContext, claimed_user_id: str | None) -> str:
+  if claimed_user_id and claimed_user_id != auth.app_user_id:
+    raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
+  return auth.app_user_id
 
 
 def _gen_group_code() -> str:
@@ -79,7 +88,6 @@ async def _get_user_ratings_count(
   group_id: str | None = None,
   style: str | None = None,
 ) -> tuple[int, float | None]:
-  """Return (count, avg_drip_score) for user in given scope."""
   q = (
     select(func.count(OutfitScore.id).label("cnt"), func.avg(OutfitScore.drip_score).label("avg"))
     .join(Outfit, Outfit.id == OutfitScore.outfit_id)
@@ -107,22 +115,31 @@ async def get_leaderboard(
   scope: str = Query("global", description="global|yearly|monthly|weekly|daily|country|group|style"),
   country: str | None = Query(None),
   group_id: str | None = Query(None),
-  style: str | None = Query(None, description="For scope=style: Streetwear, Minimal, Vintage, Luxury, Y2K, Casual, etc."),
+  style: str | None = Query(None),
   limit: int = Query(30, ge=1, le=100),
+  auth: AuthContext | None = Depends(optional_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  """Get leaderboard. Users need >= 10 outfit ratings to appear."""
-  logger.info("get_leaderboard scope=%s country=%s group_id=%s style=%s", scope, country, group_id, style)
   if scope == "country" and not country:
     raise HTTPException(status_code=400, detail="country required for country scope")
   if scope == "group" and not group_id:
     raise HTTPException(status_code=400, detail="group_id required for group scope")
   if scope == "style" and not style:
-    raise HTTPException(status_code=400, detail="style required for style scope (e.g. Streetwear, Minimal)")
+    raise HTTPException(status_code=400, detail="style required for style scope")
+  if scope == "group":
+    if auth is None:
+      raise HTTPException(status_code=401, detail="Missing token")
+    member_res = await db.execute(
+      select(RankingGroupMember.id).where(
+        RankingGroupMember.group_id == group_id,
+        RankingGroupMember.user_id == auth.app_user_id,
+      )
+    )
+    if member_res.scalar_one_or_none() is None:
+      raise HTTPException(status_code=403, detail="You are not a member of this group")
 
   try:
     eligible_users = _eligible_users_subquery()
-    # Subquery: users with >= MIN_RATINGS, with avg drip_score
     base = (
       select(
         Outfit.user_id,
@@ -146,31 +163,20 @@ async def get_leaderboard(
       base = base.where(cast(Outfit.style_tags, JSONB).contains([style]))
 
     subq = base.subquery()
-    stmt = (
-      select(subq.c.user_id, subq.c.avg_drip, subq.c.cnt)
-      .order_by(subq.c.avg_drip.desc())
-      .limit(limit)
-    )
+    stmt = select(subq.c.user_id, subq.c.avg_drip, subq.c.cnt).order_by(subq.c.avg_drip.desc()).limit(limit)
     res = await db.execute(stmt)
     rows = res.fetchall()
-  except SQLAlchemyError as exc:
-    logger.error("leaderboard query failed: %s", exc, exc_info=True)
+  except SQLAlchemyError:
     return LeaderboardResponse(scope=scope, entries=[], total_eligible=0)
-  except Exception as exc:
-    logger.error("leaderboard unexpected failure: %s", exc, exc_info=True)
-    return LeaderboardResponse(scope=scope, entries=[], total_eligible=0)
-  total = len(rows)
 
   user_ids = [r.user_id for r in rows]
-  users_stmt = select(User.id, User.username, User.display_name).where(User.id.in_(user_ids)) if user_ids else None
-  users_map = {}
-  if users_stmt is not None:
+  users_map: dict[str, str] = {}
+  if user_ids:
     try:
-      ur = await db.execute(users_stmt)
+      ur = await db.execute(select(User.id, User.username, User.display_name).where(User.id.in_(user_ids)))
       for u in ur.fetchall():
         users_map[u.id] = u.username or u.display_name or "User"
     except SQLAlchemyError:
-      # Fallback when username column is not migrated yet.
       ur = await db.execute(select(User.id, User.display_name).where(User.id.in_(user_ids)))
       for u in ur.fetchall():
         users_map[u.id] = u.display_name or "User"
@@ -185,17 +191,17 @@ async def get_leaderboard(
     )
     for idx, r in enumerate(rows)
   ]
-  return LeaderboardResponse(scope=scope, entries=entries, total_eligible=total)
+  return LeaderboardResponse(scope=scope, entries=entries, total_eligible=len(rows))
 
 
 @router.get("/me", response_model=UserRankingsResponse)
 async def get_my_rankings(
-  user_id: str = Query(..., description="User ID"),
+  user_id: str | None = Query(None),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  """Get current user's rankings across scopes. Returns empty ranks if < 10 ratings."""
-  logger.info("get_my_rankings user_id=%s", user_id)
-  # Total ratings for user
+  user_id = _require_actor_user_id(auth, user_id)
+
   count_stmt = (
     select(func.count(OutfitScore.id))
     .join(Outfit, Outfit.id == OutfitScore.outfit_id)
@@ -222,18 +228,11 @@ async def get_my_rankings(
       rankings=[],
     )
 
-  # Get user's country
   profile_stmt = select(UserProfile.country).where(UserProfile.user_id == user_id)
   profile_res = await db.execute(profile_stmt)
   user_country = profile_res.scalar_one_or_none()
 
-  scopes_to_check = [
-    ("global", None, None),
-    ("yearly", None, None),
-    ("monthly", None, None),
-    ("weekly", None, None),
-    ("daily", None, None),
-  ]
+  scopes_to_check = [("global", None, None), ("yearly", None, None), ("monthly", None, None), ("weekly", None, None), ("daily", None, None)]
   if user_country:
     scopes_to_check.append(("country", user_country, None))
   for style_name in STYLE_SCOPES:
@@ -245,12 +244,9 @@ async def get_my_rankings(
     count_scope = "style" if style_name else scope
     cnt, avg = await _get_user_ratings_count(db, user_id, count_scope, country, group_id, style_name)
     if cnt < 1:
-      rankings.append(
-        UserRankingSummary(scope=scope, rank=None, total_eligible=0, avg_drip_score=round(avg, 2) if avg else None, rating_count=cnt)
-      )
+      rankings.append(UserRankingSummary(scope=scope, rank=None, total_eligible=0, avg_drip_score=round(avg, 2) if avg else None, rating_count=cnt))
       continue
 
-    # Compute rank: count users with higher avg in same scope
     eligible_users = _eligible_users_subquery()
     base = (
       select(Outfit.user_id, func.avg(OutfitScore.drip_score).label("avg_drip"), func.count(OutfitScore.id).label("cnt"))
@@ -267,11 +263,10 @@ async def get_my_rankings(
       base = base.join(UserProfile, UserProfile.user_id == Outfit.user_id).where(UserProfile.country == country)
     if style_name:
       base = base.where(cast(Outfit.style_tags, JSONB).contains([style_name]))
-    subq = base.subquery()
-    rank_stmt = select(subq).order_by(subq.c.avg_drip.desc())
-    rres = await db.execute(rank_stmt)
+
+    rank_subq = base.subquery()
+    rres = await db.execute(select(rank_subq).order_by(desc(rank_subq.c.avg_drip)))
     rows = rres.fetchall()
-    total_eligible = len(rows)
     rank_val = None
     for i, r in enumerate(rows, 1):
       if r.user_id == user_id:
@@ -281,7 +276,7 @@ async def get_my_rankings(
       UserRankingSummary(
         scope=scope,
         rank=rank_val,
-        total_eligible=total_eligible,
+        total_eligible=len(rows),
         avg_drip_score=round(avg, 2) if avg else None,
         rating_count=cnt,
       )
@@ -299,14 +294,15 @@ async def get_my_rankings(
 @router.post("/groups", response_model=CreateGroupResponse)
 async def create_group(
   payload: CreateGroupRequest,
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
+  actor_user_id = _require_actor_user_id(auth, payload.user_id)
   code = _gen_group_code()
-  group = RankingGroup(name=payload.name, code=code, created_by_user_id=payload.user_id)
+  group = RankingGroup(name=payload.name, code=code, created_by_user_id=actor_user_id)
   db.add(group)
   await db.flush()
-  member = RankingGroupMember(group_id=group.id, user_id=payload.user_id)
-  db.add(member)
+  db.add(RankingGroupMember(group_id=group.id, user_id=actor_user_id))
   await db.commit()
   return CreateGroupResponse(group_id=group.id, code=code, name=group.name)
 
@@ -314,27 +310,27 @@ async def create_group(
 @router.post("/groups/join", response_model=JoinGroupResponse)
 async def join_group(
   payload: JoinGroupRequest,
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  stmt = select(RankingGroup).where(RankingGroup.code == payload.code.upper())
-  res = await db.execute(stmt)
+  actor_user_id = _require_actor_user_id(auth, payload.user_id)
+  res = await db.execute(select(RankingGroup).where(RankingGroup.code == payload.code.upper()))
   group = res.scalar_one_or_none()
   if not group:
     raise HTTPException(status_code=404, detail="Group not found")
-  if group.created_by_user_id == payload.user_id:
+  if group.created_by_user_id == actor_user_id:
     raise HTTPException(status_code=400, detail="You cannot join your own group with the invite code")
-  existing = (
-    await db.execute(
-      select(RankingGroupMember).where(
-        and_(RankingGroupMember.group_id == group.id, RankingGroupMember.user_id == payload.user_id)
-      )
+
+  existing = await db.execute(
+    select(RankingGroupMember).where(
+      and_(RankingGroupMember.group_id == group.id, RankingGroupMember.user_id == actor_user_id)
     )
   )
   if existing.scalar_one_or_none():
     await db.commit()
     return JoinGroupResponse(group_id=group.id, name=group.name, joined=False)
-  member = RankingGroupMember(group_id=group.id, user_id=payload.user_id)
-  db.add(member)
+
+  db.add(RankingGroupMember(group_id=group.id, user_id=actor_user_id))
   await db.commit()
   return JoinGroupResponse(group_id=group.id, name=group.name, joined=True)
 
@@ -342,46 +338,39 @@ async def join_group(
 @router.delete("/groups/{group_id}", status_code=204)
 async def delete_group(
   group_id: str,
-  user_id: str = Query(..., description="Must be the group creator"),
+  user_id: str | None = Query(None),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  stmt = select(RankingGroup).where(RankingGroup.id == group_id)
-  res = await db.execute(stmt)
+  actor_user_id = _require_actor_user_id(auth, user_id)
+  res = await db.execute(select(RankingGroup).where(RankingGroup.id == group_id))
   group = res.scalar_one_or_none()
   if not group:
     raise HTTPException(status_code=404, detail="Group not found")
-  if group.created_by_user_id != user_id:
+  if group.created_by_user_id != actor_user_id:
     raise HTTPException(status_code=403, detail="Only the creator can delete this group")
-  # delete members then group
-  await db.execute(
-    RankingGroupMember.__table__.delete().where(RankingGroupMember.group_id == group_id)
-  )
+
+  await db.execute(RankingGroupMember.__table__.delete().where(RankingGroupMember.group_id == group_id))
   await db.execute(RankingGroup.__table__.delete().where(RankingGroup.id == group_id))
   await db.commit()
-  return
 
 
 @router.get("/groups", response_model=list[GroupSummary])
-async def list_groups(user_id: str = Query(...), db: AsyncSession = Depends(get_db)):
+async def list_groups(
+  user_id: str | None = Query(None),
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  actor_user_id = _require_actor_user_id(auth, user_id)
   stmt = (
-    select(
-      RankingGroup.id,
-      RankingGroup.name,
-      RankingGroup.code,
-      RankingGroup.created_by_user_id,
-    )
+    select(RankingGroup.id, RankingGroup.name, RankingGroup.code, RankingGroup.created_by_user_id)
     .join(RankingGroupMember, RankingGroupMember.group_id == RankingGroup.id)
-    .where(RankingGroupMember.user_id == user_id)
+    .where(RankingGroupMember.user_id == actor_user_id)
   )
   res = await db.execute(stmt)
   rows = res.fetchall()
   return [
-    GroupSummary(
-      id=r.id,
-      name=r.name,
-      code=r.code,
-      is_owner=(r.created_by_user_id == user_id),
-    )
+    GroupSummary(id=r.id, name=r.name, code=r.code, is_owner=(r.created_by_user_id == actor_user_id))
     for r in rows
   ]
 
@@ -390,18 +379,31 @@ async def list_groups(user_id: str = Query(...), db: AsyncSession = Depends(get_
 async def get_group_leaderboard(
   group_id: str,
   limit: int = Query(30, ge=1, le=100),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  return await get_leaderboard(scope="group", group_id=group_id, limit=limit, db=db)
+  return await get_leaderboard(scope="group", group_id=group_id, limit=limit, auth=auth, db=db)
 
 
 @router.get("/groups/{group_id}/details", response_model=GroupDetailsResponse)
-async def get_group_details(group_id: str, db: AsyncSession = Depends(get_db)):
-  group_stmt = select(RankingGroup).where(RankingGroup.id == group_id)
-  group_res = await db.execute(group_stmt)
+async def get_group_details(
+  group_id: str,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  group_res = await db.execute(select(RankingGroup).where(RankingGroup.id == group_id))
   group = group_res.scalar_one_or_none()
   if not group:
     raise HTTPException(status_code=404, detail="Group not found")
+
+  member_res = await db.execute(
+    select(RankingGroupMember.id).where(
+      RankingGroupMember.group_id == group_id,
+      RankingGroupMember.user_id == auth.app_user_id,
+    )
+  )
+  if member_res.scalar_one_or_none() is None:
+    raise HTTPException(status_code=403, detail="You are not a member of this group")
 
   members_stmt = (
     select(
@@ -439,21 +441,15 @@ async def get_group_details(group_id: str, db: AsyncSession = Depends(get_db)):
     members_res = await db.execute(fallback_stmt)
     members_rows = members_res.fetchall()
 
-  members = []
-  for idx, row in enumerate(members_rows, start=1):
-    members.append(
-      GroupMemberStanding(
-        rank=idx,
-        user_id=row.id,
-        display_name=getattr(row, "username", None) or row.display_name or "User",
-        avg_drip_score=round(float(row.avg_drip), 2) if row.avg_drip is not None else None,
-        rating_count=int(row.cnt or 0),
-      )
+  members = [
+    GroupMemberStanding(
+      rank=idx,
+      user_id=row.id,
+      display_name=getattr(row, "username", None) or row.display_name or "User",
+      avg_drip_score=round(float(row.avg_drip), 2) if row.avg_drip is not None else None,
+      rating_count=int(row.cnt or 0),
     )
+    for idx, row in enumerate(members_rows, start=1)
+  ]
 
-  return GroupDetailsResponse(
-    group_id=group.id,
-    name=group.name,
-    code=group.code,
-    members=members,
-  )
+  return GroupDetailsResponse(group_id=group.id, name=group.name, code=group.code, members=members)

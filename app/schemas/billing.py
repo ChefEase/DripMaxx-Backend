@@ -12,9 +12,10 @@ class BillingStatusResponse(BaseModel):
 
 
 class VerifyPurchaseRequest(BaseModel):
-  user_id: str
+  user_id: str | None = None
   platform: str
   product_id: str
+  token: str | None = None
   purchase_token: str | None = None
   transaction_id: str | None = None
 

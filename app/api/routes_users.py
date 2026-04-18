@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import JSONB
 
+from app.core.auth import AuthContext, optional_auth
 from app.db.session import get_db
 from app.models import User, UserProfile, Outfit, OutfitScore, RankingGroupMember
 
@@ -47,10 +48,14 @@ def _eligible_users_subquery():
 async def get_public_profile(
   user_id: str,
   viewer_user_id: str | None = None,
+  auth: AuthContext | None = Depends(optional_auth),
   db: AsyncSession = Depends(get_db),
 ):
   """Get a user's public profile for leaderboard view. Returns rank, avg score, top 5 outfits (if visibility allows)."""
   logger.info("get_public_profile user_id=%s", user_id)
+  if auth and viewer_user_id and viewer_user_id != auth.app_user_id:
+    raise HTTPException(status_code=403, detail="viewer_user_id does not match authenticated user")
+  viewer_user_id = auth.app_user_id if auth else None
   try:
     user_stmt = select(User.id, User.username, User.display_name, User.avatar_url).where(User.id == user_id)
     user_res = await db.execute(user_stmt)

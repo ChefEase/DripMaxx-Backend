@@ -24,7 +24,7 @@ class ProfileSyncResponse(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-  user_id: str
+  user_id: str | None = None
 
 
 class DeleteAccountResponse(BaseModel):
