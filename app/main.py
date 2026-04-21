@@ -22,6 +22,11 @@ app.add_middleware(
 )
 
 
+@app.get("/", summary="Root health check")
+async def root():
+  return {"ok": True, "service": settings.app_name, "environment": settings.environment}
+
+
 @app.on_event("startup")
 async def on_startup():
   logger.info(f"starting {settings.app_name} [{settings.environment}] (debug={settings.debug})")
