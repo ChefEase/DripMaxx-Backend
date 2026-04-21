@@ -9,6 +9,7 @@ from fastapi import Depends, Header, HTTPException, status
 from jose import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from app.core.config import get_settings
 from app.db.session import get_db
@@ -41,10 +42,12 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
   try:
     header = jwt.get_unverified_header(token)
     kid = header.get("kid")
+    alg = header.get("alg")
     jwks = _fetch_jwks()
     keys = jwks.get("keys", [])
     jwk_data = next((key for key in keys if key.get("kid") == kid), None)
     if not jwk_data:
+      logger.warning("auth_failed reason=unknown_kid kid={} alg={}", kid, alg)
       raise HTTPException(status_code=401, detail="Invalid token")
 
     issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1" if settings.supabase_url else None
@@ -59,6 +62,7 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
   except HTTPException:
     raise
   except Exception as exc:
+    logger.warning("auth_failed reason=jwt_decode_error error_type={} message={}", type(exc).__name__, str(exc))
     raise HTTPException(status_code=401, detail="Invalid token") from exc
 
 
@@ -86,9 +90,13 @@ async def require_auth(
   db: AsyncSession = Depends(get_db),
 ) -> AuthContext:
   if not authorization or not authorization.startswith("Bearer "):
+    logger.warning("auth_failed reason=missing_bearer_header header_present={}", bool(authorization))
     raise HTTPException(status_code=401, detail="Missing token")
 
   token = authorization.split(" ", 1)[1].strip()
+  if not token:
+    logger.warning("auth_failed reason=empty_bearer_token")
+    raise HTTPException(status_code=401, detail="Missing token")
   claims = verify_supabase_jwt(token)
 
   auth_user_id = str(claims["sub"])
