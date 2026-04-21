@@ -45,14 +45,16 @@ def _fetch_jwks() -> dict[str, Any]:
 
 
 def _verify_with_supabase_userinfo(token: str) -> dict[str, Any]:
-  if not settings.supabase_anon_key:
-    logger.warning("auth_failed reason=missing_supabase_anon_key_for_userinfo_fallback")
+  api_key = settings.supabase_anon_key or settings.supabase_service_key
+  if not api_key:
+    logger.warning("auth_failed reason=missing_supabase_api_key_for_userinfo_fallback")
     raise HTTPException(status_code=401, detail="Invalid token")
 
+  key_mode = "anon_key" if settings.supabase_anon_key else "service_key"
   resp = requests.get(
     _user_verify_url(),
     headers={
-      "apikey": settings.supabase_anon_key,
+      "apikey": api_key,
       "Authorization": f"Bearer {token}",
     },
     timeout=10,
@@ -61,11 +63,13 @@ def _verify_with_supabase_userinfo(token: str) -> dict[str, Any]:
     resp.raise_for_status()
   except Exception as exc:
     logger.warning(
-      "auth_failed reason=userinfo_verify_failed status_code={} message={}",
+      "auth_failed reason=userinfo_verify_failed key_mode={} status_code={} message={}",
+      key_mode,
       getattr(resp, "status_code", None),
       str(exc),
     )
     raise HTTPException(status_code=401, detail="Invalid token") from exc
+  logger.info("auth_verify mode=userinfo_fallback key_mode={} status_code={}", key_mode, resp.status_code)
   data = resp.json()
   if not isinstance(data, dict) or not data.get("id"):
     logger.warning("auth_failed reason=userinfo_missing_id")
