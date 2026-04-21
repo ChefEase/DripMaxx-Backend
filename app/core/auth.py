@@ -28,7 +28,13 @@ class AuthContext:
 def _jwks_url() -> str:
   if not settings.supabase_url:
     raise HTTPException(status_code=500, detail="Supabase auth is not configured")
-  return f"{settings.supabase_url.rstrip('/')}/auth/v1/keys"
+  return f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+
+def _user_verify_url() -> str:
+  if not settings.supabase_url:
+    raise HTTPException(status_code=500, detail="Supabase auth is not configured")
+  return f"{settings.supabase_url.rstrip('/')}/auth/v1/user"
 
 
 @lru_cache(maxsize=1)
@@ -38,6 +44,35 @@ def _fetch_jwks() -> dict[str, Any]:
   return resp.json()
 
 
+def _verify_with_supabase_userinfo(token: str) -> dict[str, Any]:
+  if not settings.supabase_anon_key:
+    logger.warning("auth_failed reason=missing_supabase_anon_key_for_userinfo_fallback")
+    raise HTTPException(status_code=401, detail="Invalid token")
+
+  resp = requests.get(
+    _user_verify_url(),
+    headers={
+      "apikey": settings.supabase_anon_key,
+      "Authorization": f"Bearer {token}",
+    },
+    timeout=10,
+  )
+  try:
+    resp.raise_for_status()
+  except Exception as exc:
+    logger.warning(
+      "auth_failed reason=userinfo_verify_failed status_code={} message={}",
+      getattr(resp, "status_code", None),
+      str(exc),
+    )
+    raise HTTPException(status_code=401, detail="Invalid token") from exc
+  data = resp.json()
+  if not isinstance(data, dict) or not data.get("id"):
+    logger.warning("auth_failed reason=userinfo_missing_id")
+    raise HTTPException(status_code=401, detail="Invalid token")
+  return {"sub": str(data["id"])}
+
+
 def verify_supabase_jwt(token: str) -> dict[str, Any]:
   try:
     header = jwt.get_unverified_header(token)
@@ -45,10 +80,13 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
     alg = header.get("alg")
     jwks = _fetch_jwks()
     keys = jwks.get("keys", [])
+    if not keys:
+      logger.warning("auth_verify mode=userinfo_fallback reason=empty_jwks kid={} alg={}", kid, alg)
+      return _verify_with_supabase_userinfo(token)
     jwk_data = next((key for key in keys if key.get("kid") == kid), None)
     if not jwk_data:
-      logger.warning("auth_failed reason=unknown_kid kid={} alg={}", kid, alg)
-      raise HTTPException(status_code=401, detail="Invalid token")
+      logger.warning("auth_verify mode=userinfo_fallback reason=unknown_kid kid={} alg={}", kid, alg)
+      return _verify_with_supabase_userinfo(token)
 
     issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1" if settings.supabase_url else None
     options = {"verify_aud": False}
@@ -62,8 +100,8 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
   except HTTPException:
     raise
   except Exception as exc:
-    logger.warning("auth_failed reason=jwt_decode_error error_type={} message={}", type(exc).__name__, str(exc))
-    raise HTTPException(status_code=401, detail="Invalid token") from exc
+    logger.warning("auth_verify mode=userinfo_fallback reason=jwks_decode_error error_type={} message={}", type(exc).__name__, str(exc))
+    return _verify_with_supabase_userinfo(token)
 
 
 async def get_user_by_auth_id(db: AsyncSession, auth_id: str) -> User | None:
