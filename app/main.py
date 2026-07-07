@@ -3,7 +3,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import routes_health, routes_outfits, routes_profile, routes_events, routes_rankings, routes_users, routes_billing
+from app.api import routes_health, routes_outfits, routes_profile, routes_events, routes_rankings, routes_users, routes_billing, routes_challenges, routes_rewards
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.db.init_db import init_db
@@ -44,3 +44,5 @@ app.include_router(routes_events.router)
 app.include_router(routes_rankings.router)
 app.include_router(routes_users.router)
 app.include_router(routes_billing.router)
+app.include_router(routes_challenges.router)
+app.include_router(routes_rewards.router)

@@ -8,6 +8,7 @@ import requests
 from fastapi import Depends, Header, HTTPException, status
 from jose import jwt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -94,10 +95,12 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
 
     issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1" if settings.supabase_url else None
     options = {"verify_aud": False}
+    allowed_algs = ["RS256", "ES256"]
+    decode_algs = [alg] if isinstance(alg, str) and alg in allowed_algs else allowed_algs
     return jwt.decode(
       token,
       jwk_data,
-      algorithms=["RS256"],
+      algorithms=decode_algs,
       issuer=issuer,
       options=options,
     )
@@ -146,7 +149,14 @@ async def require_auth(
   if not user:
     user = User(id=auth_user_id, auth_id=auth_user_id)
     db.add(user)
-    await db.flush()
+    try:
+      await db.flush()
+    except IntegrityError:
+      await db.rollback()
+      user = await get_user_by_auth_id(db, auth_user_id)
+      if not user:
+        logger.error("auth_failed reason=user_create_race auth_user_id={}", auth_user_id)
+        raise HTTPException(status_code=500, detail="Could not resolve user account")
 
   return AuthContext(auth_user_id=auth_user_id, app_user_id=str(user.id))
 

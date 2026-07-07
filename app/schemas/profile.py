@@ -1,6 +1,9 @@
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
+
+from app.core.profile_values import parse_body_type, parse_gender_style
+from app.models.entities import BodyTypeEnum, GenderStyleEnum
 
 
 class ProfileSyncRequest(BaseModel):
@@ -12,11 +15,37 @@ class ProfileSyncRequest(BaseModel):
   style_preferences: Optional[List[str]] = None
   style_inspirations: Optional[List[str]] = None
   user_height: Optional[float] = None
-  user_body_type: Optional[str] = None
-  gender_style_preference: Optional[str] = None
+  user_body_type: Optional[BodyTypeEnum] = None
+  gender_style_preference: Optional[GenderStyleEnum] = None
   country: Optional[str] = None
   locale: Optional[str] = None
   profile_visibility: Optional[str] = None
+
+  @field_validator("user_body_type", mode="before")
+  @classmethod
+  def normalize_body_type(cls, value):
+    if value is None:
+      return None
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"n/a", "na", "none", "null"}:
+      return None
+    parsed = parse_body_type(raw)
+    if parsed is None:
+      raise ValueError(f"Invalid body type: {value}")
+    return parsed
+
+  @field_validator("gender_style_preference", mode="before")
+  @classmethod
+  def normalize_gender_style(cls, value):
+    if value is None:
+      return None
+    raw = str(value).strip()
+    if not raw or raw.lower() in {"n/a", "na", "none", "null"}:
+      return None
+    parsed = parse_gender_style(raw)
+    if parsed is None:
+      raise ValueError(f"Invalid gender style preference: {value}")
+    return parsed
 
 
 class ProfileSyncResponse(BaseModel):

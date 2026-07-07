@@ -257,3 +257,103 @@ class BillingReceipt(Base):
   verified_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
   expires_at = Column(DateTime(timezone=True))
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Announcement(Base):
+  __tablename__ = "announcements"
+  __table_args__ = (
+    Index("idx_announcements_active_window", "is_active", "starts_at", "ends_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  title = Column(Text, nullable=False)
+  body = Column(Text)
+  cta_label = Column(Text)
+  cta_url = Column(Text)
+  priority = Column(Integer, nullable=False, server_default=text("0"))
+  is_active = Column(Boolean, nullable=False, server_default=text("true"))
+  starts_at = Column(DateTime(timezone=True))
+  ends_at = Column(DateTime(timezone=True))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Challenge(Base):
+  __tablename__ = "challenges"
+  __table_args__ = (
+    Index("idx_challenges_active_window", "is_active", "starts_at", "ends_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  title = Column(Text, nullable=False)
+  description = Column(Text)
+  reward_scans = Column(Integer, nullable=False, server_default=text("10"))
+  reward_xp = Column(Integer, nullable=False, server_default=text("250"))
+  participation_xp = Column(Integer, nullable=False, server_default=text("25"))
+  winner_xp = Column(Integer, nullable=False, server_default=text("100"))
+  is_active = Column(Boolean, nullable=False, server_default=text("true"))
+  starts_at = Column(DateTime(timezone=True), nullable=False)
+  ends_at = Column(DateTime(timezone=True), nullable=False)
+  winner_submission_id = Column(UUID_STR)
+  winner_selected_at = Column(DateTime(timezone=True))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ChallengeSubmission(Base):
+  __tablename__ = "challenge_submissions"
+  __table_args__ = (
+    UniqueConstraint("challenge_id", "user_id", name="uq_challenge_user_submission"),
+    UniqueConstraint("challenge_id", "user_id", "outfit_id", name="uq_challenge_user_outfit"),
+    Index("idx_challenge_submissions_challenge", "challenge_id", "created_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  challenge_id = Column(UUID_STR, ForeignKey("challenges.id", ondelete="CASCADE"), nullable=False)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  outfit_id = Column(UUID_STR, ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False)
+  display_consent = Column(Boolean, nullable=False, server_default=text("false"))
+  admin_rank = Column(Integer)
+  admin_points = Column(Numeric(6, 2), nullable=False, server_default=text("0"))
+  user_vote_points = Column(Numeric(6, 2), nullable=False, server_default=text("0"))
+  final_points = Column(Numeric(6, 2), nullable=False, server_default=text("0"))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ChallengeVote(Base):
+  __tablename__ = "challenge_votes"
+  __table_args__ = (
+    UniqueConstraint("challenge_id", "user_id", name="uq_challenge_vote_user"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  challenge_id = Column(UUID_STR, ForeignKey("challenges.id", ondelete="CASCADE"), nullable=False)
+  submission_id = Column(UUID_STR, ForeignKey("challenge_submissions.id", ondelete="CASCADE"), nullable=False)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UserRewardBalance(Base):
+  __tablename__ = "user_reward_balances"
+
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+  xp = Column(Integer, nullable=False, server_default=text("0"))
+  scan_credits = Column(Integer, nullable=False, server_default=text("0"))
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class XpLedger(Base):
+  __tablename__ = "xp_ledger"
+  __table_args__ = (
+    UniqueConstraint("user_id", "source_type", "source_id", name="uq_xp_source_once"),
+    Index("idx_xp_ledger_user_time", "user_id", "created_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  points = Column(Integer, nullable=False)
+  source_type = Column(Text, nullable=False)
+  source_id = Column(UUID_STR)
+  note = Column(Text)
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

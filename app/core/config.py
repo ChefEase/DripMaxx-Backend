@@ -28,6 +28,8 @@ class Settings(BaseSettings):
   google_play_service_account_file: str | None = Field(default=None)
   premium_monthly_product_id_android: str = Field(default="dripmaxx_premium_monthly")
   premium_monthly_product_id_ios: str = Field(default="dripmaxx_premium_monthly")
+  challenge_admin_user_ids: str = Field(default="")
+  challenge_admin_emails: str = Field(default="onyiakamsy74@gmail.com")
 
 
 @lru_cache(maxsize=1)

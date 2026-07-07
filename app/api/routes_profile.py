@@ -80,7 +80,17 @@ async def _get_or_create_user(
     return user
   user = User(id=user_id, auth_id=auth_id, email=email, display_name=display_name, username=username)
   db.add(user)
-  await db.flush()
+  try:
+    await db.flush()
+  except IntegrityError:
+    await db.rollback()
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+    if not existing:
+      raise
+    if auth_id and not existing.auth_id:
+      existing.auth_id = auth_id
+    return existing
   return user
 
 
@@ -151,6 +161,12 @@ async def sync_profile(
   except IntegrityError:
     await db.rollback()
     raise HTTPException(status_code=409, detail="Username already taken")
+  logger.info(
+    "profile_sync ok user_id={} body_type={} gender_style={}",
+    user_id,
+    payload.user_body_type.value if payload.user_body_type else None,
+    payload.gender_style_preference.value if payload.gender_style_preference else None,
+  )
   return ProfileSyncResponse(user_id=user_id)
 
 

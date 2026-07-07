@@ -18,6 +18,8 @@ class SuggestionCard(BaseModel):
 
 
 class ScoreResponse(BaseModel):
+  outfit_id: Optional[str] = None
+  xp_awarded: int = 0
   drip_score: float = Field(..., ge=0, le=10)
   overall_score: float = Field(..., ge=0, le=10)
   quality_tier: str

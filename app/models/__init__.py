@@ -18,6 +18,12 @@ from app.models.entities import (
   RankingGroupMember,
   UserSubscription,
   BillingReceipt,
+  Announcement,
+  Challenge,
+  ChallengeSubmission,
+  ChallengeVote,
+  UserRewardBalance,
+  XpLedger,
 )
 
 __all__ = [
@@ -40,4 +46,10 @@ __all__ = [
   "RankingGroupMember",
   "UserSubscription",
   "BillingReceipt",
+  "Announcement",
+  "Challenge",
+  "ChallengeSubmission",
+  "ChallengeVote",
+  "UserRewardBalance",
+  "XpLedger",
 ]

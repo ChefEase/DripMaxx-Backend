@@ -11,6 +11,7 @@ from app.services.ai_scoring import score_with_ai
 from app.services.storage import upload_outfit_image
 from app.models import Outfit, OutfitScore, OutfitSuggestion, SuggestionTypeEnum, DripScoreHistory
 from app.services.usage_limits import get_scan_quota
+from app.services.rewards import SCAN_XP, award_xp_once, consume_scan_credit_if_needed
 
 router = APIRouter(prefix="/v1/outfits", tags=["outfits"])
 logger = logging.getLogger(__name__)
@@ -130,7 +131,10 @@ async def score_outfit(
       )
     )
 
+  await consume_scan_credit_if_needed(db, user_id, quota)
+  xp_awarded = SCAN_XP if await award_xp_once(db, user_id, SCAN_XP, "outfit_scan", outfit.id, "Every outfit scan") else 0
+
   await db.commit()
   await db.refresh(outfit)
 
-  return score
+  return score.model_copy(update={"outfit_id": outfit.id, "xp_awarded": xp_awarded})

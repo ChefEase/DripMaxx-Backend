@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Outfit, OutfitScore, User, UserSubscription
+from app.models import Outfit, OutfitScore, User, UserRewardBalance, UserSubscription
 
 FREE_FIRST_SCANS = 5
 FREE_REFRESH_LIMIT = 1
@@ -35,6 +35,7 @@ async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
       "limit": PAID_MONTHLY_LIMIT,
       "used": 0,
       "remaining": PAID_MONTHLY_LIMIT,
+      "bonus_scan_credits": 0,
       "allowed": True,
     }
 
@@ -93,6 +94,16 @@ async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
     await db.rollback()
     used = 0
   remaining = max(limit - used, 0)
+  bonus_scan_credits = 0
+  try:
+    balance_res = await db.execute(select(UserRewardBalance.scan_credits).where(UserRewardBalance.user_id == user_id))
+    bonus_scan_credits = int(balance_res.scalar() or 0)
+  except SQLAlchemyError:
+    await db.rollback()
+
+  allowed = remaining > 0 or bonus_scan_credits > 0
+  if remaining <= 0 and bonus_scan_credits > 0:
+    limit_type = "bonus_scan_credits"
 
   return {
     "plan": "monthly" if is_paid else "free",
@@ -101,5 +112,6 @@ async def get_scan_quota(db: AsyncSession, user_id: str) -> dict:
     "limit": limit,
     "used": used,
     "remaining": remaining,
-    "allowed": remaining > 0,
+    "bonus_scan_credits": bonus_scan_credits,
+    "allowed": allowed,
   }
