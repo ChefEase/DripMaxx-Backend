@@ -93,7 +93,24 @@ async def score_outfit(
       detail="Image upload failed; check Supabase storage configuration.",
     )
 
-  score = await score_with_ai(image_bytes, user_ctx, outfit.image_url)
+  logger.info("score_outfit stage=ai_start outfit_id=%s user_id=%s", outfit.id, user_id)
+  try:
+    score = await score_with_ai(image_bytes, user_ctx, outfit.image_url)
+  except HTTPException as exc:
+    logger.warning(
+      "score_outfit stage=ai_rejected outfit_id=%s status=%s detail=%s",
+      outfit.id,
+      exc.status_code,
+      exc.detail,
+    )
+    raise
+  except Exception:
+    logger.exception("score_outfit stage=ai_failed outfit_id=%s", outfit.id)
+    raise HTTPException(
+      status_code=status.HTTP_502_BAD_GATEWAY,
+      detail="AI scoring failed before results were generated.",
+    )
+  logger.info("score_outfit stage=ai_done outfit_id=%s drip_score=%s", outfit.id, score.drip_score)
 
   db.add(
     OutfitScore(

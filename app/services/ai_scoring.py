@@ -421,8 +421,11 @@ async def _remote_mask(image_bytes: bytes, image_url: str | None = None) -> np.n
   try:
     return await run_in_threadpool(_call)
   except Exception as exc:
-    logger.warning(f"SAM-2 mask fetch failed: {exc}")
-    return None
+    logger.exception(f"SAM-2 mask fetch failed: {exc}")
+    raise HTTPException(
+      status_code=status.HTTP_502_BAD_GATEWAY,
+      detail="Person detection service is unavailable; please retry shortly.",
+    ) from exc
 
 
 def _component_stats(mask: np.ndarray, min_ratio: float = 0.02):
@@ -695,8 +698,10 @@ async def score_with_ai(
   image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
 ) -> ScoreResponse:
   """Generate clip-like embeddings via Replicate, derive Drip Score, and emit UX suggestions."""
+  logger.info("score_with_ai stage=start image_url_present={}", bool(image_url))
   image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
   width, height = image.size
+  logger.info("score_with_ai stage=image_loaded width={} height={}", width, height)
   if width < 512 or height < 768:
     raise HTTPException(
       status_code=status.HTTP_400_BAD_REQUEST,
@@ -704,14 +709,17 @@ async def score_with_ai(
     )
 
   # Segmentation and person validation
+  logger.info("score_with_ai stage=person_detection_start")
   mask = await _remote_mask(image_bytes, image_url)
   if mask is None:
+    logger.warning("score_with_ai stage=person_detection_empty_mask")
     raise HTTPException(
       status_code=status.HTTP_400_BAD_REQUEST,
       detail="Upload a photo with exactly one person.",
     )
   areas, bboxes, h, w = _component_stats(mask)
   people_detected = len(areas)
+  logger.info("score_with_ai stage=person_detection_done components={}", people_detected)
   if people_detected == 0:
     raise HTTPException(
       status_code=status.HTTP_400_BAD_REQUEST,
@@ -739,6 +747,7 @@ async def score_with_ai(
   bbox_area = (y2 - y1 + 1) * (x2 - x1 + 1)
   person_area_ratio = bbox_area / (mask.shape[0] * mask.shape[1])
   if person_area_ratio < 0.18:
+    logger.warning("score_with_ai stage=person_rejected reason=too_far ratio={:.3f}", person_area_ratio)
     raise HTTPException(
       status_code=status.HTTP_400_BAD_REQUEST,
       detail="Person is too far away",
@@ -753,11 +762,20 @@ async def score_with_ai(
   # Pose checks
   pose_skipped = False
   try:
+    logger.info("score_with_ai stage=pose_start")
     keypoints, avg_vis, full_body_ok = _pose_metrics(image)
   except RuntimeError as exc:
     pose_skipped = True
     keypoints, avg_vis, full_body_ok = 0, 0.0, True  # allow flow to continue
     warnings = ["Pose check skipped; pose model unavailable on server."]
+    logger.warning("score_with_ai stage=pose_skipped reason={}", exc)
+  else:
+    logger.info(
+      "score_with_ai stage=pose_done keypoints={} avg_vis={:.3f} full_body_ok={}",
+      keypoints,
+      avg_vis,
+      full_body_ok,
+    )
 
   if not pose_skipped:
     if not full_body_ok:
@@ -777,8 +795,10 @@ async def score_with_ai(
   breakdown_flags: dict = {}
   attr_data: Dict[str, Any] | None = None
   if settings.replicate_vlm_model:
+    logger.info("score_with_ai stage=vlm_start model={}", settings.replicate_vlm_model)
     attrs = await _vlm_attributes(image_bytes, user_ctx, image_url)
     if attrs:
+      logger.info("score_with_ai stage=vlm_done")
       attr_data, breakdown_flags = attrs
       outfit_present = attr_data.get("outfit_present")
       if outfit_present is False:
@@ -972,6 +992,7 @@ async def score_with_ai(
   quality_tier = _quality_tier(overall_score)
 
   # LLM suggestions (no heuristic fallback; propagate errors)
+  logger.info("score_with_ai stage=suggestions_start")
   suggestions, summary = await generate_suggestions(
     breakdown,
     user_ctx,
@@ -984,6 +1005,7 @@ async def score_with_ai(
       status_code=status.HTTP_502_BAD_GATEWAY,
       detail="LLM suggestions unavailable; please retry shortly.",
     )
+  logger.info("score_with_ai stage=suggestions_done count={}", len(suggestions))
 
   # No suggestions fallback; any errors would have raised above
 
