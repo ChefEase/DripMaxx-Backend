@@ -274,6 +274,41 @@ async def profile_history(
     for r in hist_res.fetchall()
   ]
 
+  score_cards_stmt = (
+    select(
+      Outfit.id,
+      Outfit.image_url,
+      Outfit.scanned_at,
+      OutfitScore.drip_score,
+      OutfitScore.color_match,
+      OutfitScore.fit_quality,
+      OutfitScore.body_compatibility,
+      OutfitScore.trend_score,
+      OutfitScore.style_match,
+    )
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id == user_id)
+    .order_by(desc(Outfit.scanned_at))
+    .limit(30)
+  )
+  score_cards_res = await db.execute(score_cards_stmt)
+  score_cards = [
+    {
+      "outfit_id": str(r.id),
+      "image_url": r.image_url,
+      "scanned_at": r.scanned_at.isoformat() if r.scanned_at else None,
+      "drip_score": float(r.drip_score) if r.drip_score is not None else None,
+      "breakdown": {
+        "color_match": float(r.color_match) if r.color_match is not None else None,
+        "fit_quality": float(r.fit_quality) if r.fit_quality is not None else None,
+        "body_compatibility": float(r.body_compatibility) if r.body_compatibility is not None else None,
+        "trend_score": float(r.trend_score) if r.trend_score is not None else None,
+        "style_match": float(r.style_match) if r.style_match is not None else None,
+      },
+    }
+    for r in score_cards_res.fetchall()
+  ]
+
   profile_stmt = select(UserProfile.profile_visibility, UserProfile.profile_visibility_mode).where(UserProfile.user_id == user_id)
   profile_res = await db.execute(profile_stmt)
   profile_row = profile_res.fetchone()
@@ -286,6 +321,7 @@ async def profile_history(
     "recent_outfits": recent,
     "best_outfit": best_outfit,
     "history": list(reversed(history)),
+    "score_cards": score_cards,
     "profile_visibility": profile_visibility,
   }
 
