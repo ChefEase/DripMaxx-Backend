@@ -725,13 +725,9 @@ async def score_with_ai(
       status_code=status.HTTP_400_BAD_REQUEST,
       detail="Upload a photo with exactly one person.",
     )
-  if people_detected >= 2:
-    second_ratio = areas[1] / (h * w)
-    if second_ratio >= 0.08:
-      raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Upload a photo with exactly one person.",
-      )
+  # SAM segments image regions, not semantic "people". Multiple components can be
+  # clothing, shadows, background objects, or separated limbs, so do not reject
+  # solely because SAM returns more than one component.
 
   mask_cov = float(np.sum(mask)) / (mask.shape[0] * mask.shape[1])
   # choose the largest component that is not swallowing the whole frame
