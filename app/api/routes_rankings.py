@@ -1,4 +1,4 @@
-"""Rankings and leaderboard API. Users appear after 10 outfit ratings."""
+"""Rankings and leaderboard API."""
 
 import logging
 import secrets
@@ -69,15 +69,28 @@ def _time_bounds(scope: str):
   return start, now
 
 
-def _eligible_users_subquery():
-  return (
+def _eligibility_rule(scope: str) -> tuple[int, datetime | None]:
+  """Return the scan minimum and time window for a leaderboard scope."""
+  if scope == "daily":
+    start, _ = _time_bounds("daily")
+    return 1, start
+  if scope == "weekly":
+    start, _ = _time_bounds("weekly")
+    return 7, start
+  return MIN_RATINGS_FOR_LEADERBOARD, None
+
+
+def _eligible_users_subquery(scope: str):
+  minimum, start = _eligibility_rule(scope)
+  query = (
     select(Outfit.user_id.label("user_id"))
     .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
     .where(Outfit.user_id.isnot(None))
     .group_by(Outfit.user_id)
-    .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
-    .subquery()
   )
+  if start:
+    query = query.where(OutfitScore.created_at >= start)
+  return query.having(func.count(OutfitScore.id) >= minimum).subquery()
 
 
 async def _get_user_ratings_count(
@@ -139,7 +152,7 @@ async def get_leaderboard(
       raise HTTPException(status_code=403, detail="You are not a member of this group")
 
   try:
-    eligible_users = _eligible_users_subquery()
+    eligible_users = _eligible_users_subquery(scope)
     base = (
       select(
         Outfit.user_id,
@@ -219,15 +232,6 @@ async def get_my_rankings(
   avg_scalar = avg_res.scalar()
   avg_drip = float(avg_scalar) if avg_scalar is not None else None
 
-  if total_count < MIN_RATINGS_FOR_LEADERBOARD:
-    return UserRankingsResponse(
-      user_id=user_id,
-      ratings_count=total_count,
-      avg_drip_score=round(avg_drip, 2) if avg_drip else None,
-      eligible_for_leaderboard=False,
-      rankings=[],
-    )
-
   profile_stmt = select(UserProfile.country).where(UserProfile.user_id == user_id)
   profile_res = await db.execute(profile_stmt)
   user_country = profile_res.scalar_one_or_none()
@@ -247,7 +251,7 @@ async def get_my_rankings(
       rankings.append(UserRankingSummary(scope=scope, rank=None, total_eligible=0, avg_drip_score=round(avg, 2) if avg else None, rating_count=cnt))
       continue
 
-    eligible_users = _eligible_users_subquery()
+    eligible_users = _eligible_users_subquery(count_scope)
     base = (
       select(Outfit.user_id, func.avg(OutfitScore.drip_score).label("avg_drip"), func.count(OutfitScore.id).label("cnt"))
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
@@ -282,11 +286,15 @@ async def get_my_rankings(
       )
     )
 
+  daily_count, _ = await _get_user_ratings_count(db, user_id, "daily")
+  weekly_count, _ = await _get_user_ratings_count(db, user_id, "weekly")
   return UserRankingsResponse(
     user_id=user_id,
     ratings_count=total_count,
     avg_drip_score=round(avg_drip, 2) if avg_drip else None,
-    eligible_for_leaderboard=True,
+    eligible_for_leaderboard=(
+      total_count >= MIN_RATINGS_FOR_LEADERBOARD or daily_count >= 1 or weekly_count >= 7
+    ),
     rankings=rankings,
   )
 
