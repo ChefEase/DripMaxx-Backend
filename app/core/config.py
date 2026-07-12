@@ -28,6 +28,9 @@ class Settings(BaseSettings):
   google_play_service_account_file: str | None = Field(default=None)
   premium_monthly_product_id_android: str = Field(default="dripmaxx_premium_monthly")
   premium_monthly_product_id_ios: str = Field(default="dripmaxx_premium_monthly")
+  apple_bundle_id: str = Field(default="com.anonymous.dripmaxx")
+  apple_app_id: int | None = Field(default=None)
+  apple_root_certificates: str | None = Field(default=None)
   challenge_admin_user_ids: str = Field(default="")
   challenge_admin_emails: str = Field(default="onyiakamsy74@gmail.com")
 

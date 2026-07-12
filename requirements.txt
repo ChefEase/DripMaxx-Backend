@@ -18,3 +18,4 @@ supabase==2.10.0
 pytest==8.3.3
 mediapipe==0.10.30
 aiosqlite==0.20.0
+app-store-server-library>=1.0.0,<4

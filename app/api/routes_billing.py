@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from appstoreserverlibrary.models.Environment import Environment
+from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier, VerificationException
 from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +84,35 @@ def verify_with_google_play(purchase_token: str) -> dict:
     raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
+def verify_with_app_store(signed_transaction: str):
+  if not settings.apple_root_certificates:
+    raise HTTPException(status_code=500, detail="APPLE_ROOT_CERTIFICATES is not configured.")
+
+  certificate_paths = [Path(value.strip()).expanduser() for value in settings.apple_root_certificates.split(",") if value.strip()]
+  try:
+    root_certificates = [path.read_bytes() for path in certificate_paths]
+  except OSError as exc:
+    raise HTTPException(status_code=500, detail="An Apple root certificate could not be read.") from exc
+
+  # StoreKit test purchases are sandbox-signed; TestFlight and production use the
+  # production environment. Validate against both, never by decoding an untrusted JWS.
+  for environment in (Environment.PRODUCTION, Environment.SANDBOX):
+    if environment == Environment.PRODUCTION and settings.apple_app_id is None:
+      continue
+    verifier = SignedDataVerifier(
+      root_certificates,
+      True,
+      environment,
+      settings.apple_bundle_id,
+      settings.apple_app_id if environment == Environment.PRODUCTION else None,
+    )
+    try:
+      return verifier.verify_and_decode_signed_transaction(signed_transaction)
+    except VerificationException:
+      continue
+  raise HTTPException(status_code=400, detail="App Store transaction verification failed.")
+
+
 @router.get("/status", response_model=BillingStatusResponse)
 async def billing_status(
   user_id: str | None = Query(None),
@@ -124,29 +155,44 @@ async def verify_purchase(
       detail="token is required.",
     )
 
-  if platform != "android":
+  if platform not in {"android", "ios"}:
     raise HTTPException(
-      status_code=status.HTTP_501_NOT_IMPLEMENTED,
-      detail="Real purchase verification is only implemented for Android right now.",
+      status_code=status.HTTP_400_BAD_REQUEST,
+      detail="Unsupported purchase platform.",
     )
 
-  verified = verify_with_google_play(provided_token)
-  line_items = verified.get("lineItems") or []
-  if not line_items:
-    raise HTTPException(status_code=400, detail="Google Play response did not include a subscription line item.")
+  now = datetime.now(timezone.utc)
+  if platform == "android":
+    verified = verify_with_google_play(provided_token)
+    line_items = verified.get("lineItems") or []
+    if not line_items:
+      raise HTTPException(status_code=400, detail="Google Play response did not include a subscription line item.")
+    product_ids = {item.get("productId") for item in line_items if item.get("productId")}
+    if payload.product_id not in product_ids:
+      raise HTTPException(status_code=400, detail="Verified purchase does not match requested product ID.")
+    if verified.get("subscriptionState") not in {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"}:
+      raise HTTPException(status_code=400, detail="Subscription is not active.")
+    verified_purchase_token = provided_token
+    verified_transaction_id = verified.get("latestOrderId")
+    period_end = _parse_google_datetime(line_items[0].get("expiryTime")) or (now + timedelta(days=30))
+    verification_mode = "google-play"
+  else:
+    verified = verify_with_app_store(provided_token)
+    if verified.productId != payload.product_id:
+      raise HTTPException(status_code=400, detail="Verified purchase does not match requested product ID.")
+    if verified.revocationDate is not None:
+      raise HTTPException(status_code=400, detail="App Store transaction was revoked.")
+    if verified.expiresDate is None:
+      raise HTTPException(status_code=400, detail="App Store subscription did not include an expiration date.")
+    period_end = datetime.fromtimestamp(verified.expiresDate / 1000, tz=timezone.utc)
+    if period_end <= now:
+      raise HTTPException(status_code=400, detail="App Store subscription is expired.")
+    verified_purchase_token = provided_token
+    verified_transaction_id = verified.transactionId
+    verification_mode = "app-store"
 
-  product_ids = {item.get("productId") for item in line_items if item.get("productId")}
-  if payload.product_id not in product_ids:
-    raise HTTPException(status_code=400, detail="Verified purchase does not match requested product ID.")
-
-  subscription_state = verified.get("subscriptionState")
-  if subscription_state not in {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD"}:
-    raise HTTPException(status_code=400, detail="Subscription is not active.")
-
-  verified_purchase_token = provided_token
-  verified_transaction_id = verified.get("latestOrderId")
   if not verified_transaction_id:
-    raise HTTPException(status_code=400, detail="Google Play response did not include an order ID.")
+    raise HTTPException(status_code=400, detail="Verified purchase did not include a transaction ID.")
 
   receipt_stmt = select(BillingReceipt).where(
     BillingReceipt.platform == platform,
@@ -163,9 +209,6 @@ async def verify_purchase(
       status_code=status.HTTP_409_CONFLICT,
       detail="Already used",
     )
-
-  now = datetime.now(timezone.utc)
-  period_end = _parse_google_datetime(line_items[0].get("expiryTime")) or (now + timedelta(days=30))
 
   sub_stmt = select(UserSubscription).where(UserSubscription.user_id == actor_user_id)
   sub_res = await db.execute(sub_stmt)
@@ -222,5 +265,5 @@ async def verify_purchase(
     plan="monthly",
     subscription_status="active",
     current_period_end=period_end.isoformat(),
-    mode="google-play",
+    mode=verification_mode,
   )
