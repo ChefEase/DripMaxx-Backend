@@ -15,11 +15,10 @@ uvicorn app.main:app --reload --port 8000
 - `DATABASE_URL` (Postgres/Supabase) is required. Example: `postgresql+asyncpg://postgres:postgres@localhost:5432/postgres`.
 - `REPLICATE_API_TOKEN` is required for live scoring.
 - `REPLICATE_MODEL` defaults to `krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4` but can be overridden.
-- iOS subscription verification requires `APPLE_BUNDLE_ID`, `APPLE_APP_ID`, and
-  `APPLE_ROOT_CERTIFICATES` (a comma-separated list of local DER certificate
-  paths downloaded from Apple PKI). `PREMIUM_MONTHLY_PRODUCT_ID_IOS` must match
-  the subscription product in App Store Connect. `APPLE_APP_ID` is optional for
-  sandbox purchases but required for production verification.
+- Subscription verification uses RevenueCat only. Set `REVENUECAT_SECRET_API_KEY`
+  to a RevenueCat secret key on the backend and set
+  `REVENUECAT_ENTITLEMENT_ID` to the entitlement attached to both the Apple and
+  Google products (currently `DripMaxx Pro`). Never put the secret key in Expo.
 - On startup we run `Base.metadata.create_all()` to sync the schema for local dev; against Supabase this is a no-op if tables already exist.
 
 ### Endpoints

@@ -11,16 +11,12 @@ class BillingStatusResponse(BaseModel):
   remaining: int
 
 
-class VerifyPurchaseRequest(BaseModel):
+class RevenueCatSyncRequest(BaseModel):
   user_id: str | None = None
   platform: str
-  product_id: str
-  token: str | None = None
-  purchase_token: str | None = None
-  transaction_id: str | None = None
 
 
-class VerifyPurchaseResponse(BaseModel):
+class RevenueCatSyncResponse(BaseModel):
   ok: bool
   plan: str
   subscription_status: str
