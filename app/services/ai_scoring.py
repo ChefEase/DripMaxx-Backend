@@ -644,10 +644,42 @@ async def _vlm_attributes(
     ) from exc
 
 
+def _normalize_user_context(user_ctx: UserContext) -> UserContext:
+  missing_markers = {"", "n/a", "na", "none", "null", "unspecified"}
+  return user_ctx.model_copy(
+    update={
+      "style_preferences": [
+        style for style in user_ctx.style_preferences
+        if str(style).strip().lower() not in missing_markers
+      ],
+      "style_inspirations": [
+        inspiration for inspiration in user_ctx.style_inspirations
+        if str(inspiration).strip().lower() not in missing_markers
+      ],
+      "user_height": (
+        None
+        if str(user_ctx.user_height or "").strip().lower() in missing_markers
+        else user_ctx.user_height
+      ),
+      "user_body_type": (
+        None
+        if str(user_ctx.user_body_type or "").strip().lower() in missing_markers
+        else user_ctx.user_body_type
+      ),
+      "gender_style_preference": (
+        None
+        if str(user_ctx.gender_style_preference or "").strip().lower() in missing_markers
+        else user_ctx.gender_style_preference
+      ),
+    }
+  )
+
+
 async def score_with_ai(
   image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
 ) -> ScoreResponse:
   """Generate clip-like embeddings via Replicate, derive Drip Score, and emit UX suggestions."""
+  user_ctx = _normalize_user_context(user_ctx)
   logger.info("score_with_ai stage=start image_url_present={}", bool(image_url))
   image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
   width, height = image.size

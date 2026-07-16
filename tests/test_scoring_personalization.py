@@ -1,6 +1,8 @@
 from app.schemas.outfits import ScoreBreakdown
+from app.schemas.outfits import UserContext
 from app.services.ai_scoring import (
   _eval_color_score,
+  _normalize_user_context,
   _overall_from_available_metrics,
   _weighted_subscore,
 )
@@ -66,3 +68,20 @@ def test_neutral_palette_does_not_receive_an_automatic_high_floor():
 def test_old_category_labels_remain_backward_compatible():
   score = _weighted_subscore({}, {"harmony": 1.0}, "good", {"good": 8.2}, 6.0)
   assert score == 8.2
+
+
+def test_legacy_missing_markers_are_not_treated_as_profile_choices():
+  cleaned = _normalize_user_context(
+    UserContext(
+      style_preferences=["unspecified"],
+      style_inspirations=["n/a"],
+      user_height="n/a",
+      user_body_type="none",
+      gender_style_preference="null",
+    )
+  )
+  assert cleaned.style_preferences == []
+  assert cleaned.style_inspirations == []
+  assert cleaned.user_height is None
+  assert cleaned.user_body_type is None
+  assert cleaned.gender_style_preference is None
