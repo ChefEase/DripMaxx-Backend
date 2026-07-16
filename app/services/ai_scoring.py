@@ -94,43 +94,57 @@ def _normalize_color(color: str) -> str:
   return aliases.get(value, value)
 
 
-def _eval_color_score(colors: List[str], penalties: Dict[str, Any], harmony_level: str = "") -> float:
+def _score_value(value: Any, labels: Dict[str, float], default: float) -> float:
+  """Accept granular 0-10 values while remaining compatible with old labels."""
+  if isinstance(value, (int, float)) and not isinstance(value, bool):
+    return _clamp(float(value))
+  text = str(value or "").strip().lower()
+  try:
+    return _clamp(float(text))
+  except ValueError:
+    return labels.get(text, default)
+
+
+def _weighted_subscore(
+  values: Any,
+  weights: Dict[str, float],
+  fallback: Any,
+  labels: Dict[str, float],
+  default: float,
+) -> float:
+  if isinstance(values, dict):
+    valid = []
+    for key, weight in weights.items():
+      value = values.get(key)
+      if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= float(value) <= 10:
+        valid.append((float(value), weight))
+    if valid:
+      weight_total = sum(weight for _, weight in valid)
+      return _clamp(sum(value * weight for value, weight in valid) / weight_total)
+  return _score_value(fallback, labels, default)
+
+
+def _eval_color_score(colors: List[str], penalties: Dict[str, Any], harmony_level: Any = "") -> float:
   """Score coordination, not image brightness or raw color count."""
   palette = list(dict.fromkeys(_normalize_color(c) for c in colors if c.strip()))
   count = len(palette)
   level_scores = {"excellent": 9.1, "good": 8.2, "average": 6.8, "poor": 4.8, "bad": 3.2}
-  score = level_scores.get(harmony_level.strip().lower(), 7.2)
-
-  neutrals = {"black", "white", "cream", "grey", "beige", "brown", "tan", "navy"}
-  complementary_pairs = [
-    {"red", "green"}, {"blue", "orange"}, {"yellow", "purple"},
-    {"red", "white"}, {"blue", "white"}, {"black", "white"},
-  ]
-  palette_set = set(palette)
-  non_neutrals = palette_set - neutrals
-
-  # Intentional monochrome and neutral palettes are fashion staples, not mediocre defaults.
-  if count == 1:
-    score = max(score, 9.0)
-  elif palette_set and palette_set <= neutrals:
-    score = max(score, 8.7)
-  elif len(non_neutrals) == 1 and len(palette_set & neutrals) >= 1:
-    score = max(score, 8.6)  # neutral base with one controlled accent
-  elif count <= 3 and any(pair <= palette_set for pair in complementary_pairs):
-    score = max(score, 8.5)
+  score = _score_value(harmony_level, level_scores, 7.2)
 
   if penalties.get("clashing_patterns"):
     score -= 1.0
-  if penalties.get("neon_colors") and harmony_level.strip().lower() not in {"good", "excellent"}:
+  if penalties.get("neon_colors") and str(harmony_level).strip().lower() not in {"good", "excellent"}:
     score -= 0.8
   if penalties.get("too_many_colors") or count > 4:
     score -= 1.2
   return _clamp(score)
 
 
-def _eval_fit_score(fit_style: str, silhouette: str, body_type: str, quality_level: str = "") -> float:
-  score = {"excellent": 8.9, "good": 7.8, "average": 6.4, "poor": 4.7, "bad": 3.2}.get(
-    quality_level.strip().lower(), 6.8
+def _eval_fit_score(fit_style: str, silhouette: str, body_type: str, quality_level: Any = "") -> float:
+  score = _score_value(
+    quality_level,
+    {"excellent": 8.9, "good": 7.8, "average": 6.4, "poor": 4.7, "bad": 3.2},
+    6.8,
   )
   if fit_style in ("tailored", "fitted", "balanced"):
     score += 0.4
@@ -152,9 +166,11 @@ def _eval_fit_score(fit_style: str, silhouette: str, body_type: str, quality_lev
   return _clamp(score)
 
 
-def _eval_trend_score(items: List[str], trend_hits: List[str], penalties: Dict[str, Any], relevance_level: str = "") -> float:
-  score = {"excellent": 9.0, "good": 8.0, "average": 6.6, "poor": 4.8, "bad": 3.2}.get(
-    relevance_level.strip().lower(), min(8.5, 6.0 + 0.8 * len(trend_hits))
+def _eval_trend_score(items: List[str], trend_hits: List[str], penalties: Dict[str, Any], relevance_level: Any = "") -> float:
+  score = _score_value(
+    relevance_level,
+    {"excellent": 9.0, "good": 8.0, "average": 6.6, "poor": 4.8, "bad": 3.2},
+    min(8.5, 6.0 + 0.8 * len(trend_hits)),
   )
   score += min(0.6, 0.2 * len(trend_hits))
   if penalties.get("costume_like"):
@@ -162,12 +178,14 @@ def _eval_trend_score(items: List[str], trend_hits: List[str], penalties: Dict[s
   return _clamp(score)
 
 
-def _eval_style_match(user_styles: List[str], style_probs: Dict[str, float], match_level: str = "") -> float:
+def _eval_style_match(user_styles: List[str], style_probs: Dict[str, float], match_level: Any = "") -> float:
   if not user_styles:
     return 6.0
-  level_score = {
-    "excellent": 9.1, "good": 8.0, "average": 6.4, "poor": 4.6, "bad": 3.0,
-  }.get(match_level.strip().lower())
+  direct_score = _score_value(
+    match_level,
+    {"excellent": 9.1, "good": 8.0, "average": 6.4, "poor": 4.6, "bad": 3.0},
+    -1.0,
+  )
   normalized_probs = {
     str(key).strip().lower().replace(" ", "_"): float(value)
     for key, value in style_probs.items()
@@ -178,7 +196,7 @@ def _eval_style_match(user_styles: List[str], style_probs: Dict[str, float], mat
     total += normalized_probs.get(key, 0.0)
   probability_score = 5.0 + min(4.5, total * 5.0)
   # The direct judgment supports custom styles that are not classifier keys.
-  return _clamp(level_score if level_score is not None else probability_score)
+  return _clamp(direct_score if direct_score >= 0 else probability_score)
 
 
 def _normalize_height_bucket(height_text: str) -> str:
@@ -203,12 +221,14 @@ def _eval_body_compatibility(
   detected_items: List[str],
   trend_hits: List[str],
   layer_count: int,
-  compatibility_level: str = "",
+  compatibility_level: Any = "",
 ) -> float:
-  level_base = {
-    "excellent": 8.9, "good": 7.8, "average": 6.3, "poor": 4.6, "bad": 3.1,
-  }.get(compatibility_level.strip().lower())
-  score = level_base if level_base is not None else 6.2
+  level_base = _score_value(
+    compatibility_level,
+    {"excellent": 8.9, "good": 7.8, "average": 6.3, "poor": 4.6, "bad": 3.1},
+    -1.0,
+  )
+  score = level_base if level_base >= 0 else 6.2
   body_type = (body_type or "").strip().lower()
   height_bucket = _normalize_height_bucket(user_height)
   gender_style = (gender_style or "").strip().lower()
@@ -270,7 +290,7 @@ def _eval_body_compatibility(
     if fit_style in ("fitted", "tailored", "balanced"):
       score += 0.2
 
-  if level_base is not None:
+  if level_base >= 0:
     # Let concrete profile/fit evidence refine the visual judgment without
     # overwhelming it and forcing most results into the same high range.
     score = level_base + (score - level_base) * 0.35
@@ -515,11 +535,15 @@ async def _vlm_attributes(
     "silhouette and visible bunching. Do not call every balanced outfit good; use the full scale.\n"
     "- trend_relevance judges current styling and execution, not merely the presence of common clothes. "
     "A timeless coherent outfit may be good; excellent requires notably current or distinctive execution.\n"
+    "- Score every visible criterion independently from 0.0 to 10.0 with one decimal. Do not use words such "
+    "as good or excellent and do not round several criteria to the same convenient number.\n"
+    "- Calibration anchors: 5.0 is ordinary/functional, 6.5 is solid, 7.5 is clearly strong, 8.5 is exceptional, "
+    "9.3+ is rare editorial-level execution. A clean or neutral outfit is not automatically 8+.\n"
     "- selected_style_match judges the outfit against the user's exact requested styles, including custom "
-    "free-text styles not listed in style_probs. If no style was requested, use average.\n"
+    "free-text styles not listed in style_probs. If no style was requested, return null for style subscores.\n"
     "- body_compatibility judges how the visible proportions, silhouette, garment lengths and fit work on "
     "the photographed person. Use supplied height/body/gender-style context when available; otherwise judge "
-    "only visible fit and proportions and do not invent personal measurements.\n"
+    "only when profile context was supplied. If it was not supplied, return null for body subscores.\n"
     "- If inner_layer_visible is true, layer_count must be >= 1.\n"
     "- Use collar_visible only as a supporting hint.\n"
     "- style_probs are probabilities 0-1.\n"
@@ -538,19 +562,24 @@ async def _vlm_attributes(
     "\"shoe_color\": \"\","
     "\"primary_colors\": [\"black\",\"white\"],"
     "\"color_confidence\": 0.0,"
-    "\"color_harmony\": \"excellent|good|average|poor|bad\","
+    "\"color_harmony\": 0.0,"
+    "\"color_scores\": {\"harmony\":0.0,\"palette_intentionality\":0.0,\"contrast_balance\":0.0,\"material_coordination\":0.0},"
     "\"fit_style\": \"relaxed|tailored|balanced|extremely_baggy|extremely_tight\","
-    "\"fit_quality\": \"excellent|good|average|poor|bad\","
+    "\"fit_quality\": 0.0,"
+    "\"fit_scores\": {\"proportion_balance\":0.0,\"garment_fit\":0.0,\"silhouette_execution\":0.0,\"layering_and_finishing\":0.0},"
     "\"layer_count\": 0,"
     "\"collar_visible\": true|false,"
     "\"inner_layer_visible\": true|false,"
     "\"pattern_type\": \"solid|patterned\","
     "\"silhouette_balance\": \"balanced|imbalanced\","
     "\"style_probs\": {\"streetwear\":0.0,\"minimal\":0.0,\"casual\":0.0,\"luxury\":0.0,\"vintage\":0.0,\"y2k\":0.0,\"athleisure\":0.0,\"smart_casual\":0.0,\"experimental\":0.0},"
-    "\"selected_style_match\": \"excellent|good|average|poor|bad\","
-    "\"body_compatibility\": \"excellent|good|average|poor|bad\","
+    "\"selected_style_match\": 0.0|null,"
+    "\"style_scores\": {\"target_alignment\":0.0,\"styling_execution\":0.0,\"detail_consistency\":0.0},"
+    "\"body_compatibility\": 0.0|null,"
+    "\"body_scores\": {\"proportion_support\":0.0,\"garment_length\":0.0,\"silhouette_support\":0.0},"
     "\"trend_hits\": [\"relaxed_denim\",\"oversized_hoodies\"],"
-    "\"trend_relevance\": \"excellent|good|average|poor|bad\","
+    "\"trend_relevance\": 0.0,"
+    "\"trend_scores\": {\"current_relevance\":0.0,\"styling_intent\":0.0,\"distinctiveness\":0.0,\"timeless_execution\":0.0},"
     "\"detected_items\": [\"hoodie\",\"jeans\",\"sneakers\",\"watch\"],"
     "\"penalties\": {"
     "\"excessive_monochrome\": true|false,"
@@ -706,22 +735,43 @@ async def score_with_ai(
       # Too many colors
       if len(palette) > 4:
         breakdown_flags["too_many_colors"] = True
+      color_base = _weighted_subscore(
+        attr_data.get("color_scores"),
+        {"harmony": 0.40, "palette_intentionality": 0.25, "contrast_balance": 0.20, "material_coordination": 0.15},
+        attr_data.get("color_harmony"),
+        {"excellent": 9.1, "good": 8.2, "average": 6.8, "poor": 4.8, "bad": 3.2},
+        7.2,
+      )
+      fit_base = _weighted_subscore(
+        attr_data.get("fit_scores"),
+        {"proportion_balance": 0.30, "garment_fit": 0.30, "silhouette_execution": 0.25, "layering_and_finishing": 0.15},
+        attr_data.get("fit_quality"),
+        {"excellent": 8.9, "good": 7.8, "average": 6.4, "poor": 4.7, "bad": 3.2},
+        6.8,
+      )
+      trend_base = _weighted_subscore(
+        attr_data.get("trend_scores"),
+        {"current_relevance": 0.35, "styling_intent": 0.25, "distinctiveness": 0.20, "timeless_execution": 0.20},
+        attr_data.get("trend_relevance"),
+        {"excellent": 9.0, "good": 8.0, "average": 6.6, "poor": 4.8, "bad": 3.2},
+        6.6,
+      )
       color_score = _eval_color_score(
         palette,
         breakdown_flags,
-        str(attr_data.get("color_harmony") or ""),
+        color_base,
       )
       fit_score = _eval_fit_score(
         fit_style,
         silhouette,
         (user_ctx.user_body_type or "").lower(),
-        str(attr_data.get("fit_quality") or ""),
+        fit_base,
       )
       trend_score = _eval_trend_score(
         detected_items,
         trend_hits,
         breakdown_flags,
-        str(attr_data.get("trend_relevance") or ""),
+        trend_base,
       )
       styling_adj = _styling_adjustments(
         detected_items,
@@ -764,12 +814,26 @@ async def score_with_ai(
         if total > 1.0 and total > 0:
           for k in list(style_probs.keys()):
             style_probs[k] = style_probs[k] / total
+      style_base = _weighted_subscore(
+        attr_data.get("style_scores"),
+        {"target_alignment": 0.50, "styling_execution": 0.30, "detail_consistency": 0.20},
+        attr_data.get("selected_style_match"),
+        {"excellent": 9.1, "good": 8.0, "average": 6.4, "poor": 4.6, "bad": 3.0},
+        6.0,
+      )
       style_score = _eval_style_match(
         user_ctx.style_preferences or [],
         style_probs,
-        str(attr_data.get("selected_style_match") or ""),
+        style_base,
       )
       style_score = _clamp(style_score + styling_adj["style"])
+      body_base = _weighted_subscore(
+        attr_data.get("body_scores"),
+        {"proportion_support": 0.40, "garment_length": 0.30, "silhouette_support": 0.30},
+        attr_data.get("body_compatibility"),
+        {"excellent": 8.9, "good": 7.8, "average": 6.3, "poor": 4.6, "bad": 3.1},
+        6.2,
+      )
       body_score = _eval_body_compatibility(
         user_ctx.user_body_type or "",
         user_ctx.user_height or "",
@@ -779,7 +843,7 @@ async def score_with_ai(
         detected_items,
         trend_hits,
         layer_count,
-        str(attr_data.get("body_compatibility") or ""),
+        body_base,
       )
       breakdown = ScoreBreakdown(
         color_match=color_score,
@@ -847,10 +911,6 @@ async def score_with_ai(
     overall_score = _clamp(min(overall_score, 4.0))
     breakdown.trend_score = _clamp(min(breakdown.trend_score, 3.0))
     breakdown.style_match = _clamp(min(breakdown.style_match, 3.0))
-
-  # Simple outfit protection
-  if breakdown_flags.get("simple_clean"):
-    overall_score = _clamp(max(overall_score, 7.0))
 
   quality_tier = _quality_tier(overall_score)
   unavailable_metrics = []
