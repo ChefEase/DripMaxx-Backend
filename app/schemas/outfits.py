@@ -26,6 +26,7 @@ class ScoreResponse(BaseModel):
   breakdown: ScoreBreakdown
   suggestions: List[SuggestionCard] = Field(default_factory=list)
   warnings: List[str] = Field(default_factory=list)
+  unavailable_metrics: List[str] = Field(default_factory=list)
 
 
 class UserContext(BaseModel):

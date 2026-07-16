@@ -117,9 +117,17 @@ async def score_outfit(
       outfit_id=outfit.id,
       color_match=score.breakdown.color_match,
       fit_quality=score.breakdown.fit_quality,
-      body_compatibility=score.breakdown.body_compatibility,
+      body_compatibility=(
+        None
+        if "body_compatibility" in score.unavailable_metrics
+        else score.breakdown.body_compatibility
+      ),
       trend_score=score.breakdown.trend_score,
-      style_match=score.breakdown.style_match,
+      style_match=(
+        None
+        if "style_match" in score.unavailable_metrics
+        else score.breakdown.style_match
+      ),
       drip_score=score.drip_score,
       model_version="clip+llama",
     )

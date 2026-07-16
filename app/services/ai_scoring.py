@@ -1,5 +1,4 @@
 import io
-import random
 import statistics
 import json
 from typing import List, Sequence, Dict, Any
@@ -38,10 +37,6 @@ def _normalize_score(raw_score: float) -> float:
   # Fast fix: stretch distribution to reduce inflated mid/high scores.
   adjusted = (raw_score - 7.0) * 1.8 + 5.0
   return _clamp(adjusted)
-
-
-def _apply_noise(score: float) -> float:
-  return _clamp(score + random.uniform(-0.4, 0.4))
 
 
 def _label_to_score(label: str) -> float:
@@ -355,6 +350,33 @@ def _quality_tier(overall: float) -> str:
   if overall >= 5.0:
     return "Mid"
   return "Bad"
+
+
+def _overall_from_available_metrics(
+  breakdown: ScoreBreakdown,
+  *,
+  has_style_target: bool,
+  has_body_profile: bool,
+) -> float:
+  """Combine only metrics the user supplied enough context to personalize."""
+  if has_style_target and has_body_profile:
+    weights = {
+      "color_match": 0.30, "fit_quality": 0.20, "body_compatibility": 0.20,
+      "trend_score": 0.10, "style_match": 0.20,
+    }
+  elif has_style_target:
+    weights = {
+      "color_match": 0.36, "fit_quality": 0.27, "trend_score": 0.15,
+      "style_match": 0.22,
+    }
+  elif has_body_profile:
+    weights = {
+      "color_match": 0.37, "fit_quality": 0.27, "body_compatibility": 0.20,
+      "trend_score": 0.16,
+    }
+  else:
+    weights = {"color_match": 0.44, "fit_quality": 0.34, "trend_score": 0.22}
+  return _clamp(sum(getattr(breakdown, metric) * weight for metric, weight in weights.items()))
 
 
 def _compute_color_metrics(image_bytes: bytes) -> dict:
@@ -812,46 +834,13 @@ async def score_with_ai(
     or (user_ctx.user_body_type or "").strip()
     or (user_ctx.gender_style_preference or "").strip()
   )
-  if has_style_target and has_body_profile:
-    overall_score = _clamp(
-      0.30 * breakdown.color_match
-      + 0.20 * breakdown.fit_quality
-      + 0.20 * breakdown.body_compatibility
-      + 0.10 * breakdown.trend_score
-      + 0.20 * breakdown.style_match
-    )
-  elif has_style_target:
-    # A visible body-fit judgment is still useful, but carries less confidence
-    # without profile context such as height or body type.
-    overall_score = _clamp(
-      0.34 * breakdown.color_match
-      + 0.25 * breakdown.fit_quality
-      + 0.08 * breakdown.body_compatibility
-      + 0.13 * breakdown.trend_score
-      + 0.20 * breakdown.style_match
-    )
-  elif has_body_profile:
-    # Style match is only lightly weighted when the user gave us no target style.
-    overall_score = _clamp(
-      0.35 * breakdown.color_match
-      + 0.25 * breakdown.fit_quality
-      + 0.20 * breakdown.body_compatibility
-      + 0.15 * breakdown.trend_score
-      + 0.05 * breakdown.style_match
-    )
-  else:
-    # With neither target style nor body profile, emphasize visible outfit execution.
-    overall_score = _clamp(
-      0.40 * breakdown.color_match
-      + 0.30 * breakdown.fit_quality
-      + 0.08 * breakdown.body_compatibility
-      + 0.18 * breakdown.trend_score
-      + 0.04 * breakdown.style_match
-    )
+  overall_score = _overall_from_available_metrics(
+    breakdown,
+    has_style_target=has_style_target,
+    has_body_profile=has_body_profile,
+  )
   if breakdown_mode == "numeric":
-    overall_score = _apply_noise(_normalize_score(overall_score))
-  else:
-    overall_score = _apply_noise(overall_score)
+    overall_score = _normalize_score(overall_score)
 
   # Costume or absurd outfits get capped low
   if breakdown_flags.get("costume_like"):
@@ -864,6 +853,11 @@ async def score_with_ai(
     overall_score = _clamp(max(overall_score, 7.0))
 
   quality_tier = _quality_tier(overall_score)
+  unavailable_metrics = []
+  if not has_body_profile:
+    unavailable_metrics.append("body_compatibility")
+  if not has_style_target:
+    unavailable_metrics.append("style_match")
 
   # LLM suggestions (no heuristic fallback; propagate errors)
   logger.info("score_with_ai stage=suggestions_start")
@@ -918,30 +912,25 @@ async def score_with_ai(
     breakdown=breakdown,
     suggestions=suggestions,
     warnings=warnings,
+    unavailable_metrics=unavailable_metrics,
   )
 
 
 def fake_score(user_styles: List[str]) -> ScoreResponse:
   """Fallback stub when AI is unavailable."""
 
-  def rand():
-    return round(random.uniform(6.0, 9.5), 1)
-
   breakdown = ScoreBreakdown(
-    color_match=_apply_noise(_normalize_score(rand())),
-    fit_quality=_apply_noise(_normalize_score(rand())),
-    body_compatibility=_apply_noise(_normalize_score(rand())),
-    trend_score=_apply_noise(_normalize_score(rand())),
-    style_match=_apply_noise(_normalize_score(rand())),
+    color_match=7.0,
+    fit_quality=7.0,
+    body_compatibility=7.0,
+    trend_score=7.0,
+    style_match=7.0,
   )
-  overall_score = _clamp(
-    0.30 * breakdown.color_match
-    + 0.20 * breakdown.fit_quality
-    + 0.20 * breakdown.body_compatibility
-    + 0.10 * breakdown.trend_score
-    + 0.20 * breakdown.style_match
+  overall_score = _overall_from_available_metrics(
+    breakdown,
+    has_style_target=bool(user_styles),
+    has_body_profile=False,
   )
-  overall_score = _apply_noise(_normalize_score(overall_score))
   quality_tier = _quality_tier(overall_score)
   suggestions = [
     SuggestionCard(
@@ -970,4 +959,5 @@ def fake_score(user_styles: List[str]) -> ScoreResponse:
     breakdown=breakdown,
     suggestions=suggestions,
     warnings=warnings,
+    unavailable_metrics=["body_compatibility"] + ([] if user_styles else ["style_match"]),
   )
