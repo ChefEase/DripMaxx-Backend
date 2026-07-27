@@ -377,3 +377,41 @@ class XpLedger(Base):
   source_id = Column(UUID_STR)
   note = Column(Text)
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LeaderboardAward(Base):
+  __tablename__ = "leaderboard_awards"
+  __table_args__ = (
+    UniqueConstraint("scope", "category", "period_start", "rank", name="uq_leaderboard_period_rank"),
+    Index("idx_leaderboard_awards_user_time", "user_id", "created_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  scope = Column(Text, nullable=False)
+  category = Column(Text, nullable=False, server_default=text("''"))
+  period_start = Column(DateTime(timezone=True), nullable=False)
+  period_end = Column(DateTime(timezone=True), nullable=False)
+  rank = Column(Integer, nullable=False)
+  xp_awarded = Column(Integer, nullable=False, server_default=text("0"))
+  scan_credits_awarded = Column(Integer, nullable=False, server_default=text("0"))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class UserBadge(Base):
+  __tablename__ = "user_badges"
+  __table_args__ = (
+    UniqueConstraint("award_id", name="uq_user_badges_award"),
+    Index("idx_user_badges_user_time", "user_id", "earned_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  award_id = Column(UUID_STR, ForeignKey("leaderboard_awards.id", ondelete="CASCADE"))
+  badge_key = Column(Text, nullable=False)
+  label = Column(Text, nullable=False)
+  rank = Column(Integer, nullable=False)
+  scope = Column(Text, nullable=False)
+  category = Column(Text, nullable=False, server_default=text("''"))
+  is_current = Column(Boolean, nullable=False, server_default=text("false"))
+  earned_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

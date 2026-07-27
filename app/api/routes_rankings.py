@@ -20,6 +20,7 @@ from app.models import (
   RankingGroupMember,
   User,
   UserProfile,
+  UserBadge,
 )
 from app.schemas.rankings import (
   CreateGroupRequest,
@@ -33,6 +34,10 @@ from app.schemas.rankings import (
   LeaderboardResponse,
   UserRankingSummary,
   UserRankingsResponse,
+)
+from app.services.leaderboard_rewards import (
+  settle_recent_leaderboard_periods,
+  sync_all_time_badges,
 )
 
 
@@ -71,13 +76,13 @@ def _time_bounds(scope: str):
 
 def _eligibility_rule(scope: str) -> tuple[int, datetime | None]:
   """Return the scan minimum and time window for a leaderboard scope."""
-  if scope == "daily":
-    start, _ = _time_bounds("daily")
-    return 1, start
-  if scope == "weekly":
-    start, _ = _time_bounds("weekly")
-    return 7, start
-  return MIN_RATINGS_FOR_LEADERBOARD, None
+  if scope == "global":
+    return MIN_RATINGS_FOR_LEADERBOARD, None
+  if scope == "yearly":
+    start, _ = _time_bounds("yearly")
+    return MIN_RATINGS_FOR_LEADERBOARD, start
+  start, _ = _time_bounds(scope)
+  return 1, start
 
 
 def _eligible_users_subquery(scope: str):
@@ -133,6 +138,13 @@ async def get_leaderboard(
   auth: AuthContext | None = Depends(optional_auth),
   db: AsyncSession = Depends(get_db),
 ):
+  try:
+    await settle_recent_leaderboard_periods(db)
+    if scope == "global":
+      await sync_all_time_badges(db)
+  except SQLAlchemyError:
+    await db.rollback()
+    logger.exception("leaderboard reward settlement failed")
   if scope == "country" and not country:
     raise HTTPException(status_code=400, detail="country required for country scope")
   if scope == "group" and not group_id:
@@ -184,6 +196,7 @@ async def get_leaderboard(
 
   user_ids = [r.user_id for r in rows]
   users_map: dict[str, str] = {}
+  badges_map: dict[str, list[str]] = {}
   if user_ids:
     try:
       ur = await db.execute(select(User.id, User.username, User.display_name).where(User.id.in_(user_ids)))
@@ -193,6 +206,15 @@ async def get_leaderboard(
       ur = await db.execute(select(User.id, User.display_name).where(User.id.in_(user_ids)))
       for u in ur.fetchall():
         users_map[u.id] = u.display_name or "User"
+    badge_rows = await db.execute(
+      select(UserBadge.user_id, UserBadge.label, UserBadge.earned_at)
+      .where(UserBadge.user_id.in_(user_ids))
+      .order_by(UserBadge.earned_at.desc())
+    )
+    for badge_user_id, badge_label, _ in badge_rows.fetchall():
+      labels = badges_map.setdefault(badge_user_id, [])
+      if len(labels) < 3:
+        labels.append(badge_label)
 
   entries = [
     LeaderboardEntry(
@@ -201,6 +223,7 @@ async def get_leaderboard(
       display_name=users_map.get(r.user_id),
       avg_drip_score=round(float(r.avg_drip), 2),
       rating_count=int(r.cnt),
+      badges=badges_map.get(r.user_id, []),
     )
     for idx, r in enumerate(rows)
   ]
@@ -293,7 +316,7 @@ async def get_my_rankings(
     ratings_count=total_count,
     avg_drip_score=round(avg_drip, 2) if avg_drip else None,
     eligible_for_leaderboard=(
-      total_count >= MIN_RATINGS_FOR_LEADERBOARD or daily_count >= 1 or weekly_count >= 7
+      total_count >= MIN_RATINGS_FOR_LEADERBOARD or daily_count >= 1 or weekly_count >= 1
     ),
     rankings=rankings,
   )

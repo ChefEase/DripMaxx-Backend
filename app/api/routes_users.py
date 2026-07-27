@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.auth import AuthContext, optional_auth
 from app.db.session import get_db
-from app.models import User, UserProfile, Outfit, OutfitScore, RankingGroupMember
+from app.models import User, UserBadge, UserProfile, Outfit, OutfitScore, RankingGroupMember
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 logger = logging.getLogger(__name__)
@@ -33,15 +33,19 @@ def _scope_start(scope: str):
   return None
 
 
-def _eligible_users_subquery():
-  return (
+def _eligible_users_subquery(
+  minimum: int = MIN_RATINGS_FOR_LEADERBOARD,
+  start: datetime | None = None,
+):
+  query = (
     select(Outfit.user_id.label("user_id"))
     .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
     .where(Outfit.user_id.isnot(None))
     .group_by(Outfit.user_id)
-    .having(func.count(OutfitScore.id) >= MIN_RATINGS_FOR_LEADERBOARD)
-    .subquery()
   )
+  if start:
+    query = query.where(OutfitScore.created_at >= start)
+  return query.having(func.count(OutfitScore.id) >= minimum).subquery()
 
 
 @router.get("/{user_id}/public-profile")
@@ -111,6 +115,7 @@ async def get_public_profile(
     "rating_count": rating_count,
     "top_outfits": [],
     "rankings": [],
+    "badges": [],
   }
 
   can_view_details = True
@@ -134,6 +139,24 @@ async def get_public_profile(
   if not can_view_details:
     result["profile_visibility"] = visibility
     return result
+
+  badge_res = await db.execute(
+    select(UserBadge)
+    .where(UserBadge.user_id == user_id)
+    .order_by(UserBadge.is_current.desc(), UserBadge.earned_at.desc())
+    .limit(50)
+  )
+  result["badges"] = [
+    {
+      "id": badge.id,
+      "label": badge.label,
+      "rank": badge.rank,
+      "scope": badge.scope,
+      "category": badge.category,
+      "is_current": bool(badge.is_current),
+    }
+    for badge in badge_res.scalars().all()
+  ]
 
   # Top 5 rated outfits.
   top_stmt = (
@@ -159,8 +182,12 @@ async def get_public_profile(
   if profile_row and profile_row.country:
     scopes.append("country")
   scopes.extend([f"style:{s}" for s in STYLE_SCOPES])
-  eligible_users = _eligible_users_subquery()
   for scope in scopes:
+    scope_start = _scope_start(scope) if scope == "yearly" else None
+    eligible_users = _eligible_users_subquery(
+      MIN_RATINGS_FOR_LEADERBOARD if scope in ("global", "yearly") else 1,
+      scope_start,
+    )
     q = (
       select(
         Outfit.user_id,

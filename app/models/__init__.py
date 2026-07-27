@@ -25,6 +25,8 @@ from app.models.entities import (
   ChallengeVote,
   UserRewardBalance,
   XpLedger,
+  LeaderboardAward,
+  UserBadge,
 )
 
 __all__ = [
@@ -54,4 +56,6 @@ __all__ = [
   "ChallengeVote",
   "UserRewardBalance",
   "XpLedger",
+  "LeaderboardAward",
+  "UserBadge",
 ]

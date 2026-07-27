@@ -10,6 +10,7 @@ class LeaderboardEntry(BaseModel):
   display_name: Optional[str] = None
   avg_drip_score: float
   rating_count: int
+  badges: List[str] = Field(default_factory=list)
 
 
 class LeaderboardResponse(BaseModel):

@@ -4,7 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
-from app.models import XpLedger
+from app.models import UserBadge, XpLedger
+from app.services.leaderboard_rewards import settle_recent_leaderboard_periods, sync_all_time_badges
 from app.services.rewards import XP_PER_SCAN_REWARD, get_or_create_balance
 
 router = APIRouter(prefix="/v1/rewards", tags=["rewards"])
@@ -19,6 +20,8 @@ async def get_my_rewards(
   if user_id and user_id != auth.app_user_id:
     raise HTTPException(status_code=403, detail="user_id does not match authenticated user")
 
+  await settle_recent_leaderboard_periods(db)
+  await sync_all_time_badges(db)
   balance = await get_or_create_balance(db, auth.app_user_id)
   ledger_res = await db.execute(
     select(XpLedger)
@@ -38,6 +41,24 @@ async def get_my_rewards(
   ]
 
   xp = int(balance.xp or 0)
+  badge_res = await db.execute(
+    select(UserBadge)
+    .where(UserBadge.user_id == auth.app_user_id)
+    .order_by(desc(UserBadge.earned_at))
+    .limit(50)
+  )
+  badges = [
+    {
+      "id": badge.id,
+      "badge_key": badge.badge_key,
+      "label": badge.label,
+      "rank": badge.rank,
+      "scope": badge.scope,
+      "category": badge.category,
+      "earned_at": badge.earned_at.isoformat() if badge.earned_at else None,
+    }
+    for badge in badge_res.scalars().all()
+  ]
   return {
     "user_id": auth.app_user_id,
     "xp": xp,
@@ -45,4 +66,5 @@ async def get_my_rewards(
     "xp_per_scan_reward": XP_PER_SCAN_REWARD,
     "xp_until_next_reward": max(XP_PER_SCAN_REWARD - xp, 0),
     "history": history,
+    "badges": badges,
   }
