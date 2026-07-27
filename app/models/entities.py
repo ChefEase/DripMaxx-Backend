@@ -170,6 +170,26 @@ class OutfitSuggestion(Base):
   updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class FeatureSubmission(Base):
+  __tablename__ = "feature_submissions"
+  __table_args__ = (
+    UniqueConstraint("outfit_id", name="uq_feature_submissions_outfit"),
+    Index("idx_feature_submissions_created_at", "created_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  outfit_id = Column(UUID_STR, ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  feature_username = Column(Text)
+  instagram_url = Column(Text)
+  tiktok_url = Column(Text)
+  display_consent = Column(Boolean, nullable=False, server_default=text("false"))
+  status = Column(Text, nullable=False, server_default=text("'pending'"))
+  consented_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class StyleDNA(Base):
   __tablename__ = "style_dna"
 

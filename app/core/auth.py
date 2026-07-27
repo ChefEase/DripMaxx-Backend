@@ -24,6 +24,7 @@ settings = get_settings()
 class AuthContext:
   auth_user_id: str
   app_user_id: str
+  email: str | None = None
 
 
 def _jwks_url() -> str:
@@ -75,7 +76,7 @@ def _verify_with_supabase_userinfo(token: str) -> dict[str, Any]:
   if not isinstance(data, dict) or not data.get("id"):
     logger.warning("auth_failed reason=userinfo_missing_id")
     raise HTTPException(status_code=401, detail="Invalid token")
-  return {"sub": str(data["id"])}
+  return {"sub": str(data["id"]), "email": data.get("email")}
 
 
 def verify_supabase_jwt(token: str) -> dict[str, Any]:
@@ -158,7 +159,12 @@ async def require_auth(
         logger.error("auth_failed reason=user_create_race auth_user_id={}", auth_user_id)
         raise HTTPException(status_code=500, detail="Could not resolve user account")
 
-  return AuthContext(auth_user_id=auth_user_id, app_user_id=str(user.id))
+  verified_email = str(claims.get("email") or "").strip().lower() or None
+  return AuthContext(
+    auth_user_id=auth_user_id,
+    app_user_id=str(user.id),
+    email=verified_email,
+  )
 
 
 async def optional_auth(
