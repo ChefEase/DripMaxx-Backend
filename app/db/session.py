@@ -24,9 +24,20 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 
 @asynccontextmanager
 async def lifespan(app):
-  """FastAPI lifespan hook for clean startup/shutdown."""
+  """Initialize application resources and clean them up on shutdown."""
+  from app.core.logging import setup_logging
+  from app.db.init_db import init_db
+
+  logger = setup_logging()
+  logger.info(f"starting {settings.app_name} [{settings.environment}] (debug={settings.debug})")
+  try:
+    await init_db()
+    logger.info("database schema ready")
+  except Exception as exc:  # pragma: no cover - startup logging only
+    logger.exception(f"failed to initialize database: {exc}")
+
   async def settle_leaderboard_awards():
-    # Allow startup schema initialization to finish before the first pass.
+    # Let the service settle before the first pass.
     await asyncio.sleep(60)
     while True:
       try:
