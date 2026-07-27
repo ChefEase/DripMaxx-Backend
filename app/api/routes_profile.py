@@ -1,7 +1,9 @@
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, desc
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select, desc, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -21,6 +23,33 @@ from app.schemas.profile import (
 
 router = APIRouter(prefix="/v1/profile", tags=["profile"])
 settings = get_settings()
+
+
+def _average(values: list[float]) -> float:
+  return sum(values) / len(values) if values else 0.0
+
+
+def _improvement(values: list[float]) -> float:
+  """Compare the newest and oldest up-to-three scans to reduce one-scan noise."""
+  if len(values) < 2:
+    return 0.0
+  window = min(3, max(1, len(values) // 2))
+  return _average(values[-window:]) - _average(values[:window])
+
+
+def _current_streak(scanned_at: list[datetime]) -> int:
+  days = sorted({value.date() for value in scanned_at if value}, reverse=True)
+  if not days:
+    return 0
+  today = datetime.now(timezone.utc).date()
+  if days[0] < today - timedelta(days=1):
+    return 0
+  streak = 1
+  for previous, current in zip(days, days[1:]):
+    if previous - current != timedelta(days=1):
+      break
+    streak += 1
+  return streak
 
 
 def _visibility_flag(value: str | None) -> bool:
@@ -323,6 +352,76 @@ async def profile_history(
     "history": list(reversed(history)),
     "score_cards": score_cards,
     "profile_visibility": profile_visibility,
+  }
+
+
+@router.get("/progress-insights", response_model=dict)
+async def progress_insights(
+  user_id: str | None = None,
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  """Return motivational scan and style progress derived from persisted scores."""
+  user_id = _require_actor_user_id(auth, user_id)
+  rows_res = await db.execute(
+    select(
+      Outfit.scanned_at,
+      Outfit.style_tags,
+      OutfitScore.drip_score,
+      OutfitScore.style_match,
+    )
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id == user_id)
+    .order_by(Outfit.scanned_at)
+  )
+  rows = rows_res.fetchall()
+  scores = [float(row.drip_score) for row in rows if row.drip_score is not None]
+
+  style_series: dict[str, list[float]] = {}
+  for row in rows:
+    tags = [str(tag).strip() for tag in (row.style_tags or []) if str(tag).strip()]
+    if tags:
+      if row.style_match is None:
+        continue
+      for tag in dict.fromkeys(tags):
+        style_series.setdefault(tag, []).append(float(row.style_match))
+    elif row.drip_score is not None:
+      # With no target style, the fair comparison is the overall outfit score.
+      style_series.setdefault("No style selected", []).append(float(row.drip_score))
+
+  user_averages_res = await db.execute(
+    select(Outfit.user_id, func.avg(OutfitScore.drip_score).label("average_score"))
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.user_id.is_not(None), OutfitScore.drip_score.is_not(None))
+    .group_by(Outfit.user_id)
+  )
+  user_averages = [
+    float(row.average_score)
+    for row in user_averages_res.fetchall()
+    if row.average_score is not None and str(row.user_id) != str(user_id)
+  ]
+  average_score = _average(scores)
+  percentile = (
+    round(100 * sum(value < average_score for value in user_averages) / len(user_averages))
+    if user_averages
+    else 0
+  )
+
+  return {
+    "outfits_scanned": len(scores),
+    "current_streak_days": _current_streak([row.scanned_at for row in rows]),
+    "average_score": round(average_score, 1),
+    "improvement_points": round(_improvement(scores), 1),
+    "better_than_percent": max(0, min(99, percentile)),
+    "style_progress": [
+      {
+        "style": style,
+        "scans": len(values),
+        "average_score": round(_average(values), 1),
+        "improvement_points": round(_improvement(values), 1),
+      }
+      for style, values in style_series.items()
+    ],
   }
 
 
