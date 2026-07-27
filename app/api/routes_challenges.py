@@ -13,7 +13,9 @@ from app.models import (
   Challenge,
   ChallengeSubmission,
   ChallengeVote,
+  CommunityNews,
   Outfit,
+  OutfitScore,
   User,
 )
 from app.schemas.challenges import (
@@ -383,6 +385,37 @@ async def select_winner(
       is_active=True,
       starts_at=challenge.winner_selected_at,
       ends_at=challenge.winner_selected_at + timedelta(days=7),
+    )
+  )
+  winner_outfit_res = await db.execute(
+    select(Outfit.image_url, OutfitScore.drip_score)
+    .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+    .where(Outfit.id == submission.outfit_id)
+  )
+  winner_outfit = winner_outfit_res.first()
+  winner_score = round(float(winner_outfit[1]) * 10) if winner_outfit and winner_outfit[1] is not None else None
+  score_line = f"\nScore: {winner_score}/100" if winner_score is not None else ""
+  db.add(
+    CommunityNews(
+      news_key=f"challenge-winner:{challenge.id}",
+      kind="challenge_winner",
+      scope="challenge",
+      category=challenge.title,
+      eyebrow="🏆 COMMUNITY CHALLENGE",
+      title=f"{challenge.title} Winner",
+      caption=(
+        f"🏆 COMMUNITY CHALLENGE\n\n{challenge.title}\n\n"
+        f"Winner: @{display_name}{score_line}\n\n"
+        "A standout look chosen by the DripMaxx community.\n\n#DripMaxx"
+      ),
+      image_url=winner_outfit[0] if winner_outfit else None,
+      content={
+        "winner": display_name,
+        "score": winner_score,
+        "challenge_id": challenge.id,
+      },
+      published_at=challenge.winner_selected_at,
+      expires_at=challenge.winner_selected_at + timedelta(days=14),
     )
   )
   await add_scan_credits(db, submission.user_id, int(challenge.reward_scans or 10))

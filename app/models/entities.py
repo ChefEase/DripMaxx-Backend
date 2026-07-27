@@ -415,3 +415,50 @@ class UserBadge(Base):
   category = Column(Text, nullable=False, server_default=text("''"))
   is_current = Column(Boolean, nullable=False, server_default=text("false"))
   earned_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class CommunityNews(Base):
+  __tablename__ = "community_news"
+  __table_args__ = (
+    UniqueConstraint("news_key", name="uq_community_news_key"),
+    Index("idx_community_news_publish_window", "published_at", "expires_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  news_key = Column(Text, nullable=False)
+  kind = Column(Text, nullable=False)
+  scope = Column(Text, nullable=False)
+  category = Column(Text, nullable=False, server_default=text("''"))
+  audience_country = Column(Text)
+  eyebrow = Column(Text, nullable=False, server_default=text("'COMMUNITY FIT'"))
+  title = Column(Text, nullable=False)
+  caption = Column(Text, nullable=False)
+  image_url = Column(Text)
+  content = Column(JSON, nullable=False, server_default=text("'{}'"))
+  published_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  expires_at = Column(DateTime(timezone=True))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class CommunityNewsDismissal(Base):
+  __tablename__ = "community_news_dismissals"
+  __table_args__ = (
+    UniqueConstraint("news_id", "user_id", name="uq_community_news_dismissal"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  news_id = Column(UUID_STR, ForeignKey("community_news.id", ondelete="CASCADE"), nullable=False)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  dismissed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class CommunityNewsLike(Base):
+  __tablename__ = "community_news_likes"
+  __table_args__ = (
+    UniqueConstraint("news_id", "user_id", name="uq_community_news_like"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  news_id = Column(UUID_STR, ForeignKey("community_news.id", ondelete="CASCADE"), nullable=False)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

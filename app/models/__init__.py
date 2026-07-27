@@ -27,6 +27,9 @@ from app.models.entities import (
   XpLedger,
   LeaderboardAward,
   UserBadge,
+  CommunityNews,
+  CommunityNewsDismissal,
+  CommunityNewsLike,
 )
 
 __all__ = [
@@ -58,4 +61,7 @@ __all__ = [
   "XpLedger",
   "LeaderboardAward",
   "UserBadge",
+  "CommunityNews",
+  "CommunityNewsDismissal",
+  "CommunityNewsLike",
 ]
