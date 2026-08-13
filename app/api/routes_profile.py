@@ -378,8 +378,13 @@ async def progress_insights(
   scores = [float(row.drip_score) for row in rows if row.drip_score is not None]
 
   style_series: dict[str, list[float]] = {}
+  missing_style_markers = {"", "unspecified", "none", "null", "n/a", "na", "no style selected"}
   for row in rows:
-    tags = [str(tag).strip() for tag in (row.style_tags or []) if str(tag).strip()]
+    tags = [
+      str(tag).strip()
+      for tag in (row.style_tags or [])
+      if str(tag).strip().lower() not in missing_style_markers
+    ]
     if tags:
       if row.style_match is None:
         continue
