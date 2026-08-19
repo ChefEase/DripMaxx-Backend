@@ -3,7 +3,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import routes_health, routes_outfits, routes_profile, routes_events, routes_rankings, routes_users, routes_billing, routes_challenges, routes_rewards, routes_features, routes_news
+from app.api import routes_health, routes_outfits, routes_profile, routes_events, routes_rankings, routes_users, routes_billing, routes_challenges, routes_rewards, routes_features, routes_news, routes_styling
 from app.core.config import get_settings
 from app.db.session import lifespan
 
@@ -27,6 +27,7 @@ api.include_router(routes_challenges.router)
 api.include_router(routes_rewards.router)
 api.include_router(routes_features.router)
 api.include_router(routes_news.router)
+api.include_router(routes_styling.router)
 
 # Keep CORS outside FastAPI's error middleware so unhandled 500 responses also
 # include CORS headers and remain inspectable by browser clients.
