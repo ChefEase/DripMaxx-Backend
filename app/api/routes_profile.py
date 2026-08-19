@@ -18,6 +18,7 @@ from app.schemas.profile import (
   DeleteAccountResponse,
   ProfileSyncRequest,
   ProfileSyncResponse,
+  PrivacySocialPreferencesResponse,
   StyleDNAResponse,
 )
 
@@ -63,6 +64,22 @@ def _visibility_mode(value: str | None) -> str:
   if value in ("public", "friends_only", "private"):
     return value
   return "public"
+
+
+def _social_choice(value: bool | str | None, fallback: str) -> str:
+  if value == "undecided":
+    return "undecided"
+  if value is True:
+    return "true"
+  if value is False:
+    return "false"
+  return fallback
+
+
+def _choice_value(value: str) -> bool | str:
+  if value == "undecided":
+    return "undecided"
+  return value == "true"
 
 
 def _storage_path_from_url(image_url: str | None, bucket: str) -> str | None:
@@ -164,8 +181,12 @@ async def sync_profile(
       gender_style_preference=payload.gender_style_preference,
       country=payload.country,
       locale=payload.locale,
-      profile_visibility=_visibility_flag(payload.profile_visibility),
-      profile_visibility_mode=_visibility_mode(payload.profile_visibility),
+      profile_visibility=_visibility_flag(payload.profile_visibility) if payload.profile_visibility is not None else False,
+      profile_visibility_mode=_visibility_mode(payload.profile_visibility) if payload.profile_visibility is not None else "private",
+      onboarding_privacy_completed=False,
+      profile_visibility_choice=payload.profile_visibility_choice or "undecided",
+      community_feed_choice=_social_choice(payload.community_feed_enabled, "undecided"),
+      leaderboard_choice=_social_choice(payload.leaderboard_enabled, "undecided"),
     )
     db.add(profile)
   else:
@@ -184,6 +205,17 @@ async def sync_profile(
     if payload.profile_visibility is not None:
       profile.profile_visibility = _visibility_flag(payload.profile_visibility)
       profile.profile_visibility_mode = _visibility_mode(payload.profile_visibility)
+    if payload.profile_visibility_choice is not None:
+      profile.profile_visibility_choice = payload.profile_visibility_choice
+      effective_visibility = "private" if payload.profile_visibility_choice == "undecided" else payload.profile_visibility_choice
+      profile.profile_visibility = _visibility_flag(effective_visibility)
+      profile.profile_visibility_mode = effective_visibility
+    if payload.community_feed_enabled is not None:
+      profile.community_feed_choice = _social_choice(payload.community_feed_enabled, profile.community_feed_choice)
+    if payload.leaderboard_enabled is not None:
+      profile.leaderboard_choice = _social_choice(payload.leaderboard_enabled, profile.leaderboard_choice)
+    if payload.onboarding_privacy_completed is not None:
+      profile.onboarding_privacy_completed = payload.onboarding_privacy_completed
 
   try:
     await db.commit()
@@ -197,6 +229,31 @@ async def sync_profile(
     payload.gender_style_preference.value if payload.gender_style_preference else None,
   )
   return ProfileSyncResponse(user_id=user_id)
+
+
+@router.get("/privacy-social", response_model=PrivacySocialPreferencesResponse)
+async def privacy_social_preferences(
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  stmt = select(UserProfile).where(UserProfile.user_id == auth.app_user_id)
+  profile = (await db.execute(stmt)).scalar_one_or_none()
+  if not profile:
+    return PrivacySocialPreferencesResponse(
+      profile_visibility="undecided",
+      community_feed_enabled="undecided",
+      leaderboard_enabled="undecided",
+      onboarding_completed=False,
+    )
+  visibility_choice = profile.profile_visibility_choice or profile.profile_visibility_mode or "public"
+  if visibility_choice not in ("private", "public", "undecided"):
+    visibility_choice = "private"
+  return PrivacySocialPreferencesResponse(
+    profile_visibility=visibility_choice,
+    community_feed_enabled=_choice_value(profile.community_feed_choice or "true"),
+    leaderboard_enabled=_choice_value(profile.leaderboard_choice or "true"),
+    onboarding_completed=bool(profile.onboarding_privacy_completed),
+  )
 
 
 @router.post("/delete-account", response_model=DeleteAccountResponse)

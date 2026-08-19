@@ -74,6 +74,10 @@ class UserProfile(Base):
   profile_visibility = Column(Boolean, server_default=text("true"))
   # Canonical visibility mode: public | friends_only | private
   profile_visibility_mode = Column(Text, server_default=text("'public'"))
+  onboarding_privacy_completed = Column(Boolean, nullable=False, server_default=text("true"))
+  profile_visibility_choice = Column(Text, nullable=False, server_default=text("'public'"))
+  community_feed_choice = Column(Text, nullable=False, server_default=text("'true'"))
+  leaderboard_choice = Column(Text, nullable=False, server_default=text("'true'"))
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
   updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -1,6 +1,6 @@
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from app.core.profile_values import parse_body_type, parse_gender_style
 from app.models.entities import BodyTypeEnum, GenderStyleEnum
@@ -20,6 +20,10 @@ class ProfileSyncRequest(BaseModel):
   country: Optional[str] = None
   locale: Optional[str] = None
   profile_visibility: Optional[str] = None
+  profile_visibility_choice: Optional[Literal["private", "public", "undecided"]] = None
+  community_feed_enabled: Optional[bool | Literal["undecided"]] = None
+  leaderboard_enabled: Optional[bool | Literal["undecided"]] = None
+  onboarding_privacy_completed: Optional[bool] = None
 
   @field_validator("user_body_type", mode="before")
   @classmethod
@@ -50,6 +54,13 @@ class ProfileSyncRequest(BaseModel):
 
 class ProfileSyncResponse(BaseModel):
   user_id: str
+
+
+class PrivacySocialPreferencesResponse(BaseModel):
+  profile_visibility: Literal["private", "public", "undecided"]
+  community_feed_enabled: bool | Literal["undecided"]
+  leaderboard_enabled: bool | Literal["undecided"]
+  onboarding_completed: bool
 
 
 class DeleteAccountRequest(BaseModel):
