@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import ValidationError
 
 from app.core.auth import AuthContext, require_auth
 from app.schemas.styling import Occasion, StylingResponse, WeatherSnapshot
@@ -24,6 +25,7 @@ async def style_outfit(
   occasion: Occasion = Form(...),
   latitude: float = Form(...),
   longitude: float = Form(...),
+  weather_json: str | None = Form(None),
   _auth: AuthContext = Depends(require_auth),
 ):
   if not image.content_type or not image.content_type.startswith("image/"):
@@ -33,5 +35,11 @@ async def style_outfit(
     raise HTTPException(status_code=400, detail="Image upload is empty.")
   if len(image_bytes) > 12 * 1024 * 1024:
     raise HTTPException(status_code=413, detail="Image is too large.")
-  weather = await get_current_weather(latitude, longitude)
+  if weather_json:
+    try:
+      weather = WeatherSnapshot.model_validate_json(weather_json)
+    except ValidationError as exc:
+      raise HTTPException(status_code=422, detail="Invalid weather snapshot.") from exc
+  else:
+    weather = await get_current_weather(latitude, longitude)
   return await style_outfit_with_ai(image_bytes, occasion, weather)
