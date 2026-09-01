@@ -72,3 +72,26 @@ def upload_outfit_image(
   except Exception as e:
     logger.exception("upload_outfit_image failed: %s", e)
     return None
+
+
+def upload_target_image(image_bytes: bytes, session_id: str, user_id: str) -> Optional[str]:
+  """Persist generated target art because Replicate output URLs expire."""
+  settings = get_settings()
+  if not settings.supabase_url or not settings.supabase_service_key:
+    return None
+  try:
+    from supabase import create_client
+    client = create_client(settings.supabase_url, settings.supabase_service_key)
+    bucket = settings.supabase_bucket or "outfits"
+    path = f"{user_id}/evolution/{session_id}-target.webp"
+    client.storage.from_(bucket).upload(
+      path=path, file=image_bytes,
+      file_options={"content-type": "image/webp", "upsert": "true"},
+    )
+    response = client.storage.from_(bucket).get_public_url(path)
+    if isinstance(response, dict):
+      return response.get("publicUrl") or response.get("publicURL")
+    return str(response) if response else None
+  except Exception as exc:
+    logger.exception("upload_target_image failed: %s", exc)
+    return None

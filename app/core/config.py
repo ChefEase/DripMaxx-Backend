@@ -16,8 +16,9 @@ class Settings(BaseSettings):
   replicate_model: str = Field(
     default="krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4"
   )
-  replicate_llm_model: str = Field(default="openai/gpt-5.4")
-  replicate_vlm_model: str = Field(default="openai/gpt-5.4")
+  replicate_llm_model: str = Field(default="openai/gpt-5.6-terra")
+  replicate_vlm_model: str = Field(default="openai/gpt-5.6-terra")
+  replicate_image_model: str = Field(default="openai/gpt-image-2")
   database_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/postgres")
   supabase_url: str | None = Field(default=None)
   supabase_service_key: str | None = Field(default=None)

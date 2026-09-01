@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, status
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, optional_auth
@@ -15,7 +17,16 @@ async def track_event(
   auth: AuthContext | None = Depends(optional_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  user_id = auth.app_user_id if auth else event.user_id
-  db.add(EventLog(user_id=user_id, name=event.name, payload=event.payload))
+  if len(json.dumps(event.payload, separators=(",", ":"), default=str)) > 16_384:
+    raise HTTPException(status_code=413, detail="Event payload is too large.")
+  # Never accept a caller-supplied user ID. Authenticated events are tied to
+  # the verified token; pre-auth events are joined through anonymous_id.
+  user_id = auth.app_user_id if auth else None
+  db.add(EventLog(
+    user_id=user_id,
+    anonymous_id=event.anonymous_id,
+    name=event.name,
+    payload=event.payload,
+  ))
   await db.commit()
   return EventOut()

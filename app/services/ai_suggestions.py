@@ -59,9 +59,14 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
   summary = detection.get("summary")
   main_suggestions = detection.get("main_suggestions")
   optional_suggestions = detection.get("optional_suggestions")
+  target_look = detection.get("target_look")
   if not isinstance(summary, str) or not summary.strip():
     return False
   if not isinstance(main_suggestions, list) or not isinstance(optional_suggestions, list):
+    return False
+  if not isinstance(target_look, dict) or not all(
+    isinstance(target_look.get(key), list) for key in ("preserve", "change", "add", "styling")
+  ):
     return False
   if len(main_suggestions) != 3 or len(optional_suggestions) != 2:
     return False
@@ -76,6 +81,12 @@ def _is_valid_detection(detection: Dict[str, Any]) -> bool:
     if not (isinstance(title, str) and title.strip() and isinstance(type_name, str) and type_name.strip() and isinstance(description, str) and description.strip()):
       return False
     if _looks_placeholder(title) or _looks_placeholder(description):
+      return False
+    if item.get("importance") not in {"high", "medium", "low"}:
+      return False
+    if not all(isinstance(item.get(key), str) and item[key].strip() for key in (
+      "current_state", "recommended_change", "reason", "target_state"
+    )):
       return False
     if type_name.strip().lower() == "color":
       color_count += 1
@@ -94,7 +105,7 @@ async def generate_suggestions(
   image_bytes: bytes,
   image_url: str | None = None,
   visual_context: Dict[str, Any] | None = None,
-) -> Tuple[List[SuggestionCard], str | None]:
+) -> Tuple[List[SuggestionCard], str | None, Dict[str, Any]]:
   """Generate dynamic suggestion cards and summary from GPT-5.4 using grounded visual context."""
   if not settings.replicate_api_token:
     raise HTTPException(
@@ -106,14 +117,15 @@ async def generate_suggestions(
     "Look at the image and output ONLY JSON with dynamic suggestion cards and a summary:\n"
     "{"
     "\"summary\": \"two short sentences: one on what works, one on what to improve\","
+    "\"target_look\":{\"preserve\":[\"visible items that must stay unchanged\"],\"change\":[\"exact recommended substitutions\"],\"add\":[\"only recommended additions\"],\"styling\":[\"target fit, proportions, and color result\"]},"
     "\"main_suggestions\": ["
-    "{\"title\": \"Lighten the shoes\", \"type\": \"color\", \"description\": \"Try lighter shoes or a lighter shirt so the outfit does not feel too dark.\"},"
-    "{\"title\": \"Fix the shape\", \"type\": \"fit\", \"description\": \"Make either the top or pants fit closer so the outfit has a cleaner shape.\"},"
-    "{\"title\": \"Add one detail\", \"type\": \"accessory\", \"description\": \"Add one simple detail like a watch, chain, or jacket so the outfit stands out more.\"}"
+    "{\"title\":\"Short title\",\"type\":\"fit\",\"description\":\"One clear action.\",\"current_state\":\"What is visible now\",\"recommended_change\":\"Exact change\",\"reason\":\"Why it helps\",\"importance\":\"high\",\"target_state\":\"Visible result to verify\"},"
+    "{\"title\":\"Short title\",\"type\":\"color\",\"description\":\"One clear action.\",\"current_state\":\"What is visible now\",\"recommended_change\":\"Exact change\",\"reason\":\"Why it helps\",\"importance\":\"medium\",\"target_state\":\"Visible result to verify\"},"
+    "{\"title\":\"Short title\",\"type\":\"accessory\",\"description\":\"One clear action.\",\"current_state\":\"What is visible now\",\"recommended_change\":\"Exact change\",\"reason\":\"Why it helps\",\"importance\":\"low\",\"target_state\":\"Visible result to verify\"}"
     "],"
     "\"optional_suggestions\": ["
-    "{\"title\": \"Mix the colors\", \"type\": \"color\", \"description\": \"Swap one matching color for grey, white, or black so the look has more balance.\"},"
-    "{\"title\": \"Clean up the finish\", \"type\": \"other\", \"description\": \"Choose neater fabric or a cleaner hem so the outfit looks more put together.\"}"
+    "{\"title\":\"Short title\",\"type\":\"layering\",\"description\":\"One clear action.\",\"current_state\":\"What is visible now\",\"recommended_change\":\"Exact change\",\"reason\":\"Why it helps\",\"importance\":\"medium\",\"target_state\":\"Visible result to verify\"},"
+    "{\"title\":\"Short title\",\"type\":\"other\",\"description\":\"One clear action.\",\"current_state\":\"What is visible now\",\"recommended_change\":\"Exact change\",\"reason\":\"Why it helps\",\"importance\":\"low\",\"target_state\":\"Visible result to verify\"}"
     "]"
     "}\n"
     "Rules:\n"
@@ -126,6 +138,9 @@ async def generate_suggestions(
     "- Do not use placeholder words like 'dynamic title' or schema wording.\n"
     "- Do not use canned wording, templates, or generic fallback advice.\n"
     "- Suggestions must be concrete and visually grounded in the provided outfit details.\n"
+    "- Every suggestion must include current_state, recommended_change, reason, importance, and a visually verifiable target_state.\n"
+    "- target_look must preserve every visible person, garment, accessory, hairstyle, body shape, and environment detail not explicitly changed by the five suggestions.\n"
+    "- importance must be high, medium, or low based on likely score impact; use high sparingly.\n"
     "- Return exactly 3 main_suggestions and exactly 2 optional_suggestions.\n"
     "- Keep titles short, natural, and clear. Do not repeat the same noun across multiple suggestions unless absolutely necessary.\n"
     "- Avoid giving all five suggestions about the same issue. Spread them across color, fit, accessory, layering, or finish when possible.\n"
@@ -189,14 +204,15 @@ async def generate_suggestions(
       "Fix and return ONLY valid JSON for this schema:\n"
       "{"
       "\"summary\": \"two short sentences: one on what works, one on what to improve\","
+      "\"target_look\":{\"preserve\":[\"items\"],\"change\":[\"changes\"],\"add\":[\"additions\"],\"styling\":[\"styling targets\"]},"
       "\"main_suggestions\": ["
-      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+      "{\"title\":\"title\",\"type\":\"fit|layering|color|accessory|other\",\"description\":\"action\",\"current_state\":\"visible now\",\"recommended_change\":\"change\",\"reason\":\"reason\",\"importance\":\"high|medium|low\",\"target_state\":\"verifiable target\"},"
+      "{\"title\":\"title\",\"type\":\"fit|layering|color|accessory|other\",\"description\":\"action\",\"current_state\":\"visible now\",\"recommended_change\":\"change\",\"reason\":\"reason\",\"importance\":\"high|medium|low\",\"target_state\":\"verifiable target\"},"
+      "{\"title\":\"title\",\"type\":\"fit|layering|color|accessory|other\",\"description\":\"action\",\"current_state\":\"visible now\",\"recommended_change\":\"change\",\"reason\":\"reason\",\"importance\":\"high|medium|low\",\"target_state\":\"verifiable target\"}"
       "],"
       "\"optional_suggestions\": ["
-      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"},"
-      "{\"title\": \"natural short title\", \"type\": \"fit|layering|color|accessory|other\", \"description\": \"specific outfit change based on the image\"}"
+      "{\"title\":\"title\",\"type\":\"fit|layering|color|accessory|other\",\"description\":\"action\",\"current_state\":\"visible now\",\"recommended_change\":\"change\",\"reason\":\"reason\",\"importance\":\"high|medium|low\",\"target_state\":\"verifiable target\"},"
+      "{\"title\":\"title\",\"type\":\"fit|layering|color|accessory|other\",\"description\":\"action\",\"current_state\":\"visible now\",\"recommended_change\":\"change\",\"reason\":\"reason\",\"importance\":\"high|medium|low\",\"target_state\":\"verifiable target\"}"
       "]"
       "}\n"
       "Rules:\n"
@@ -230,7 +246,21 @@ async def generate_suggestions(
     text = f"{title} {desc}"
     if any(_too_similar(text, f"{c.title} {c.description}") for c in final):
       continue
-    final.append(SuggestionCard(title=title, type=type_name, description=desc))
+    importance = str(item.get("importance") or "medium").lower()
+    if importance not in {"high", "medium", "low"}:
+      importance = "medium"
+    impact = {"high": 0.55, "medium": 0.35, "low": 0.2}[importance]
+    final.append(SuggestionCard(
+      title=title,
+      type=type_name,
+      description=desc,
+      current_state=str(item.get("current_state") or "").strip() or None,
+      recommended_change=str(item.get("recommended_change") or desc).strip(),
+      reason=str(item.get("reason") or "").strip() or None,
+      importance=importance,
+      target_state=str(item.get("target_state") or "").strip() or None,
+      impact=impact,
+    ))
     if len(final) >= 5:
       break
 
@@ -241,4 +271,4 @@ async def generate_suggestions(
       detail="LLM suggestions unavailable; please retry shortly.",
     )
   logger.debug(f"LLM suggestions dynamic {len(final)} items")
-  return final, summary or None
+  return final, summary or None, detection.get("target_look") or {}

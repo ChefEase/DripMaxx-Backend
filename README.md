@@ -15,6 +15,8 @@ uvicorn app.main:app --reload --port 8000
 - `DATABASE_URL` (Postgres/Supabase) is required. Example: `postgresql+asyncpg://postgres:postgres@localhost:5432/postgres`.
 - `REPLICATE_API_TOKEN` is required for live scoring.
 - `REPLICATE_MODEL` defaults to `krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4` but can be overridden.
+- `REPLICATE_LLM_MODEL` and `REPLICATE_VLM_MODEL` default to `openai/gpt-5.6-terra`.
+- `REPLICATE_IMAGE_MODEL` defaults to `openai/gpt-image-2`; target images are generated after scoring and persisted to Supabase because Replicate delivery URLs expire.
 - Subscription verification uses RevenueCat only. Set `REVENUECAT_SECRET_API_KEY`
   to a RevenueCat secret key on the backend and set
   `REVENUECAT_ENTITLEMENT_ID` to the entitlement attached to both the Apple and

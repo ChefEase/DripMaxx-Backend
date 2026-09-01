@@ -174,6 +174,73 @@ class OutfitSuggestion(Base):
   updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class OutfitEvolutionSession(Base):
+  __tablename__ = "outfit_evolution_sessions"
+  __table_args__ = (
+    UniqueConstraint("original_outfit_id", name="uq_evolution_original_outfit"),
+    Index("idx_evolution_user_updated", "user_id", "updated_at"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  user_id = Column(UUID_STR, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+  original_outfit_id = Column(UUID_STR, ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False)
+  original_score = Column(Numeric(4, 2), nullable=False)
+  current_score = Column(Numeric(4, 2), nullable=False)
+  potential_score = Column(Numeric(4, 2), nullable=False)
+  original_analysis = Column(JSON, nullable=False, default=dict)
+  target_look = Column(JSON, nullable=False, default=dict)
+  target_image_url = Column(Text)
+  target_generation_status = Column(Text, nullable=False, server_default=text("'pending'"))
+  target_generation_error = Column(Text)
+  status = Column(Text, nullable=False, server_default=text("'active'"))
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+  updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+
+class OutfitEvolutionRecommendation(Base):
+  __tablename__ = "outfit_evolution_recommendations"
+  __table_args__ = (
+    UniqueConstraint("session_id", "position", name="uq_evolution_recommendation_position"),
+    Index("idx_evolution_recommendation_session", "session_id", "position"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  session_id = Column(UUID_STR, ForeignKey("outfit_evolution_sessions.id", ondelete="CASCADE"), nullable=False)
+  position = Column(Integer, nullable=False)
+  category = Column(Text, nullable=False)
+  title = Column(Text, nullable=False)
+  current_state = Column(Text)
+  recommended_change = Column(Text, nullable=False)
+  reason = Column(Text)
+  importance = Column(Text, nullable=False, server_default=text("'medium'"))
+  target_state = Column(Text)
+  impact = Column(Numeric(4, 2), nullable=False)
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class OutfitEvolutionRevision(Base):
+  __tablename__ = "outfit_evolution_revisions"
+  __table_args__ = (
+    UniqueConstraint("session_id", "revision_number", name="uq_evolution_revision_number"),
+    UniqueConstraint("outfit_id", name="uq_evolution_revision_outfit"),
+    Index("idx_evolution_revision_session", "session_id", "revision_number"),
+  )
+
+  id = Column(UUID_STR, primary_key=True, default=_uuid)
+  session_id = Column(UUID_STR, ForeignKey("outfit_evolution_sessions.id", ondelete="CASCADE"), nullable=False)
+  outfit_id = Column(UUID_STR, ForeignKey("outfits.id", ondelete="CASCADE"), nullable=False)
+  revision_number = Column(Integer, nullable=False)
+  previous_score = Column(Numeric(4, 2), nullable=False)
+  current_score = Column(Numeric(4, 2), nullable=False)
+  score_change = Column(Numeric(4, 2), nullable=False)
+  completed_recommendation_ids = Column(JSON, nullable=False, default=list)
+  recommendation_results = Column(JSON, nullable=False, default=list)
+  new_issues = Column(JSON, nullable=False, default=list)
+  summary = Column(Text, nullable=False)
+  confidence = Column(Numeric(4, 3), nullable=False)
+  created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class FeatureSubmission(Base):
   __tablename__ = "feature_submissions"
   __table_args__ = (
@@ -221,10 +288,15 @@ class DripScoreHistory(Base):
 
 class EventLog(Base):
   __tablename__ = "event_log"
-  __table_args__ = (Index("idx_event_log_user_time", "user_id", "created_at"),)
+  __table_args__ = (
+    Index("idx_event_log_user_time", "user_id", "created_at"),
+    Index("idx_event_log_anonymous_time", "anonymous_id", "created_at"),
+    Index("idx_event_log_name_time", "name", "created_at"),
+  )
 
   id = Column(UUID_STR, primary_key=True, default=_uuid)
   user_id = Column(UUID_STR, nullable=True)
+  anonymous_id = Column(String(80), nullable=True)
   name = Column(Text, nullable=False)
   payload = Column(JSON)
   created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

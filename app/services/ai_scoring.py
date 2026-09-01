@@ -18,7 +18,7 @@ settings = get_settings()
 DEFAULT_MODEL_REF = (
   "krthr/clip-embeddings:1c0371070cb827ec3c7f2f28adcdde54b50dcd239aa6faea0bc98b174ef03fb4"
 )
-VLM_MODEL_REF_DEFAULT = "openai/gpt-5.4"
+VLM_MODEL_REF_DEFAULT = "openai/gpt-5.6-terra"
 STYLE_PROMPTS = [
   "streetwear outfit photo",
   "minimalist outfit photo",
@@ -953,7 +953,7 @@ async def score_with_ai(
 
   # LLM suggestions (no heuristic fallback; propagate errors)
   logger.info("score_with_ai stage=suggestions_start")
-  suggestions, summary = await generate_suggestions(
+  suggestions, summary, target_look = await generate_suggestions(
     breakdown,
     user_ctx,
     image_bytes,
@@ -1005,6 +1005,8 @@ async def score_with_ai(
     suggestions=suggestions,
     warnings=warnings,
     unavailable_metrics=unavailable_metrics,
+    visual_analysis=attr_data or {},
+    target_look=target_look,
   )
 
 

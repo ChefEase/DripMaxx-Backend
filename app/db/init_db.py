@@ -30,8 +30,35 @@ async def _ensure_privacy_social_columns(conn):
     await conn.execute(text(statement))
 
 
+async def _ensure_growth_analytics_columns(conn):
+  """Keep deployed databases compatible when code precedes manual SQL."""
+  if conn.dialect.name != "postgresql":
+    return
+  statements = [
+    "alter table event_log add column if not exists anonymous_id varchar(80)",
+    "create index if not exists idx_event_log_anonymous_time on event_log (anonymous_id, created_at)",
+    "create index if not exists idx_event_log_name_time on event_log (name, created_at)",
+  ]
+  for statement in statements:
+    await conn.execute(text(statement))
+
+
+async def _ensure_outfit_evolution_columns(conn):
+  if conn.dialect.name != "postgresql":
+    return
+  statements = [
+    "alter table outfit_evolution_sessions add column if not exists target_look jsonb not null default '{}'::jsonb",
+    "alter table outfit_evolution_sessions add column if not exists target_generation_status text not null default 'pending'",
+    "alter table outfit_evolution_sessions add column if not exists target_generation_error text",
+  ]
+  for statement in statements:
+    await conn.execute(text(statement))
+
+
 async def init_db():
   """Create tables if they don't exist (safe for local dev)."""
   async with engine.begin() as conn:
     await conn.run_sync(Base.metadata.create_all)
     await _ensure_privacy_social_columns(conn)
+    await _ensure_growth_analytics_columns(conn)
+    await _ensure_outfit_evolution_columns(conn)
