@@ -2,6 +2,7 @@ import json
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile, Depends, HTTPException, status, Form
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, require_auth
@@ -267,6 +268,24 @@ async def get_outfit_evolution(
   db: AsyncSession = Depends(get_db),
 ):
   return serialize_evolution(*(await load_evolution(db, session_id, auth.app_user_id)))
+
+
+@router.get("/evolutions")
+async def list_outfit_evolutions(
+  auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
+  session_ids = list((await db.execute(
+    select(OutfitEvolutionSession.id)
+    .where(OutfitEvolutionSession.user_id == auth.app_user_id)
+    .order_by(desc(OutfitEvolutionSession.updated_at))
+    .limit(12)
+  )).scalars().all())
+  sessions = [
+    serialize_evolution(*(await load_evolution(db, str(session_id), auth.app_user_id)))
+    for session_id in session_ids
+  ]
+  return {"sessions": sessions}
 
 
 @router.post("/evolution/{session_id}/target")
