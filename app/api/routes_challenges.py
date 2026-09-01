@@ -49,6 +49,22 @@ def _split_env_csv(value: str) -> set[str]:
   return {part.strip().lower() for part in value.split(",") if part.strip()}
 
 
+def _validate_admin_placements(first: str, second: str | None, third: str | None, available_ids: set[str]) -> list[str]:
+  required = min(3, len(available_ids))
+  ranked = [value for value in (first, second, third) if value]
+  if len(ranked) != required:
+    raise ValueError(f"Rank all {required} available submission(s)")
+  if len(set(ranked)) != len(ranked):
+    raise ValueError("Ranked submissions must be unique")
+  if any(value not in available_ids for value in ranked):
+    raise LookupError("One or more submissions were not found")
+  return ranked
+
+
+def _results_visible(winner_selected_at: datetime | None, now: datetime) -> bool:
+  return winner_selected_at is None or winner_selected_at > now - timedelta(hours=24)
+
+
 async def _require_challenge_admin(auth: AuthContext, db: AsyncSession) -> None:
   settings = get_settings()
   admin_user_ids = _split_env_csv(settings.challenge_admin_user_ids)
@@ -106,7 +122,10 @@ async def _get_active_challenge(db: AsyncSession) -> Challenge | None:
     .order_by(Challenge.starts_at.desc())
     .limit(1)
   )
-  return res.scalar_one_or_none()
+  challenge = res.scalar_one_or_none()
+  if challenge and not _results_visible(challenge.winner_selected_at, now):
+    return None
+  return challenge
 
 
 async def _recalculate_challenge_scores(db: AsyncSession, challenge_id: str) -> None:
@@ -128,6 +147,61 @@ async def _recalculate_challenge_scores(db: AsyncSession, challenge_id: str) -> 
     submission.final_points = round(float(submission.admin_points or 0) + float(submission.user_vote_points or 0), 2)
 
 
+async def _finalize_ranked_challenge(db: AsyncSession, challenge: Challenge, submissions: list[ChallengeSubmission]) -> None:
+  """Settle only the placements that exist, exactly once, after the deadline."""
+  if challenge.winner_submission_id:
+    return
+  ranked = sorted([row for row in submissions if row.admin_rank], key=lambda row: row.admin_rank)
+  if not ranked or challenge.ends_at > _now():
+    return
+  expected = min(3, len(submissions))
+  if [row.admin_rank for row in ranked] != list(range(1, expected + 1)):
+    return
+
+  settled_at = _now()
+  challenge.winner_submission_id = ranked[0].id
+  challenge.winner_selected_at = settled_at
+  placement_data = []
+  reward_ratios = {1: 1.0, 2: 0.6, 3: 0.3}
+  for submission in ranked:
+    user = (await db.execute(select(User).where(User.id == submission.user_id))).scalar_one_or_none()
+    outfit = (await db.execute(
+      select(Outfit.image_url, OutfitScore.drip_score)
+      .join(OutfitScore, OutfitScore.outfit_id == Outfit.id, isouter=True)
+      .where(Outfit.id == submission.outfit_id)
+    )).first()
+    name = (user.username or user.display_name) if user else "DripMaxx user"
+    ratio = reward_ratios[int(submission.admin_rank)]
+    scans = round(int(challenge.reward_scans or 0) * ratio)
+    xp = round(int(challenge.reward_xp or 0) * ratio)
+    if scans:
+      await add_scan_credits(db, submission.user_id, scans)
+    await award_xp_once(db, submission.user_id, xp, f"challenge_place_{submission.admin_rank}", challenge.id, f"Challenge place {submission.admin_rank}")
+    if submission.admin_rank == 1:
+      await award_xp_once(db, submission.user_id, int(challenge.winner_xp or CHALLENGE_WIN_XP), "challenge_win", challenge.id, "Winning a challenge")
+    placement_data.append({
+      "rank": int(submission.admin_rank), "name": name, "user_id": submission.user_id,
+      "submission_id": submission.id, "image_url": outfit[0] if outfit else None,
+      "score": round(float(outfit[1]) * 10) if outfit and outfit[1] is not None else None,
+      "scan_credits": scans, "xp": xp,
+    })
+
+  lines = [f"{item['rank']}. @{item['name']} — {item['score']}/100" if item["score"] is not None else f"{item['rank']}. @{item['name']}" for item in placement_data]
+  db.add(CommunityNews(
+    news_key=f"challenge-results:{challenge.id}", kind="challenge_results", scope="challenge",
+    category=challenge.title, eyebrow="🏆 COMMUNITY CHALLENGE", title=f"{challenge.title} Results",
+    caption=f"🏆 {challenge.title}\n\n" + "\n".join(lines) + "\n\nRewards have been delivered.",
+    image_url=placement_data[0]["image_url"],
+    content={"challenge_id": challenge.id, "placements": placement_data},
+    published_at=settled_at, expires_at=settled_at + timedelta(hours=24),
+  ))
+  db.add(Announcement(
+    title=f"{challenge.title} results are in", body="See the final placements in Community News.",
+    cta_label="View Results", cta_url="acme://challenge", priority=100, is_active=True,
+    starts_at=settled_at, ends_at=settled_at + timedelta(hours=24),
+  ))
+
+
 @router.get("/active", response_model=ActiveChallengeResponse)
 async def get_active_challenge(db: AsyncSession = Depends(get_db)):
   now = _now()
@@ -142,6 +216,12 @@ async def get_active_challenge(db: AsyncSession = Depends(get_db)):
     .limit(1)
   )
   challenge = await _get_active_challenge(db)
+  if challenge and not challenge.winner_submission_id and challenge.ends_at <= now:
+    submissions = list((await db.execute(
+      select(ChallengeSubmission).where(ChallengeSubmission.challenge_id == challenge.id)
+    )).scalars().all())
+    await _finalize_ranked_challenge(db, challenge, submissions)
+    await db.commit()
   return ActiveChallengeResponse(
     announcement=_announcement_response(announcement_res.scalar_one_or_none()),
     challenge=_challenge_response(challenge),
@@ -217,6 +297,8 @@ async def vote_for_submission(
   challenge = challenge_res.scalar_one_or_none()
   if not challenge:
     raise HTTPException(status_code=404, detail="Challenge not found")
+  if challenge.winner_selected_at and challenge.winner_selected_at <= _now() - timedelta(hours=24):
+    raise HTTPException(status_code=404, detail="Challenge results have expired")
   if challenge.winner_submission_id:
     raise HTTPException(status_code=400, detail="Challenge winner has already been selected")
   if challenge.ends_at <= _now():
@@ -263,26 +345,30 @@ async def set_admin_top_three(
     raise HTTPException(status_code=404, detail="Challenge not found")
   if challenge.winner_submission_id:
     raise HTTPException(status_code=409, detail="Winner has already been selected")
-  ranked_ids = [payload.first_submission_id, payload.second_submission_id, payload.third_submission_id]
-  if len(set(ranked_ids)) != 3:
-    raise HTTPException(status_code=400, detail="Top 3 submissions must be unique")
-
   submissions_res = await db.execute(
     select(ChallengeSubmission).where(ChallengeSubmission.challenge_id == challenge_id)
   )
   submissions = submissions_res.scalars().all()
   by_id = {submission.id: submission for submission in submissions}
-  if any(submission_id not in by_id for submission_id in ranked_ids):
-    raise HTTPException(status_code=404, detail="One or more submissions were not found")
+  try:
+    ranked_ids = _validate_admin_placements(
+      payload.first_submission_id, payload.second_submission_id, payload.third_submission_id, set(by_id)
+    )
+  except LookupError as exc:
+    raise HTTPException(status_code=404, detail=str(exc)) from exc
+  except ValueError as exc:
+    raise HTTPException(status_code=400, detail=str(exc)) from exc
 
   for submission in submissions:
     submission.admin_rank = None
     submission.admin_points = 0
-  for rank, points, submission_id in ((1, 60, ranked_ids[0]), (2, 40, ranked_ids[1]), (3, 20, ranked_ids[2])):
+  for rank, submission_id in enumerate(ranked_ids, start=1):
+    points = {1: 60, 2: 40, 3: 20}[rank]
     by_id[submission_id].admin_rank = rank
     by_id[submission_id].admin_points = points
 
   await _recalculate_challenge_scores(db, challenge_id)
+  await _finalize_ranked_challenge(db, challenge, submissions)
   await db.commit()
 
 
@@ -296,6 +382,8 @@ async def get_challenge_results(
   challenge = challenge_res.scalar_one_or_none()
   if not challenge:
     raise HTTPException(status_code=404, detail="Challenge not found")
+  if not _results_visible(challenge.winner_selected_at, _now()):
+    raise HTTPException(status_code=404, detail="Challenge results have expired")
 
   stmt = (
     select(ChallengeSubmission, Outfit.image_url, User.username, User.display_name)
@@ -353,6 +441,18 @@ async def select_winner(
     raise HTTPException(status_code=404, detail="Challenge not found")
   if challenge.winner_submission_id:
     raise HTTPException(status_code=409, detail="Winner has already been selected")
+  if challenge.ends_at > _now():
+    raise HTTPException(status_code=400, detail="The challenge deadline must pass before rewards are distributed")
+  all_submissions = list((await db.execute(
+    select(ChallengeSubmission).where(ChallengeSubmission.challenge_id == challenge_id)
+  )).scalars().all())
+  first = next((row for row in all_submissions if row.admin_rank == 1), None)
+  if not first or first.id != payload.submission_id:
+    raise HTTPException(status_code=400, detail="Save all available admin placements before settling results")
+  await _recalculate_challenge_scores(db, challenge_id)
+  await _finalize_ranked_challenge(db, challenge, all_submissions)
+  await db.commit()
+  return
 
   submission_res = await db.execute(
     select(ChallengeSubmission).where(

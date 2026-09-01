@@ -48,8 +48,8 @@ class VoteRequest(BaseModel):
 
 class AdminRankRequest(BaseModel):
   first_submission_id: str
-  second_submission_id: str
-  third_submission_id: str
+  second_submission_id: str | None = None
+  third_submission_id: str | None = None
 
 
 class WinnerRequest(BaseModel):
