@@ -53,6 +53,19 @@ def test_real_regression_can_lower_score():
   assert score < 7.5
 
 
+def test_major_off_target_change_lowers_score_without_crushing_it():
+  recommendations = [_recommendation("pants", 0.5), _recommendation("shoes", 0.3)]
+  score = calculate_revision_score(
+    7.0, 7.4, 8.1, 5.8, recommendations,
+    [
+      {"id": "pants", "status": "regressed", "confidence": 0.95},
+      {"id": "shoes", "status": "remaining", "confidence": 0.9},
+    ],
+    1.0, 0.92,
+  )
+  assert 5.5 <= score < 7.4
+
+
 def test_default_models_use_terra_and_gpt_image_2():
   settings = Settings(_env_file=None)
   assert settings.replicate_llm_model == "openai/gpt-5.6-terra"

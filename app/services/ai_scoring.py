@@ -676,7 +676,8 @@ def _normalize_user_context(user_ctx: UserContext) -> UserContext:
 
 
 async def score_with_ai(
-  image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None
+  image_bytes: bytes, user_ctx: UserContext, image_url: str | None = None,
+  generate_improvements: bool = True,
 ) -> ScoreResponse:
   """Generate clip-like embeddings via Replicate, derive Drip Score, and emit UX suggestions."""
   user_ctx = _normalize_user_context(user_ctx)
@@ -951,21 +952,24 @@ async def score_with_ai(
   if not has_style_target:
     unavailable_metrics.append("style_match")
 
-  # LLM suggestions (no heuristic fallback; propagate errors)
-  logger.info("score_with_ai stage=suggestions_start")
-  suggestions, summary, target_look = await generate_suggestions(
-    breakdown,
-    user_ctx,
-    image_bytes,
-    image_url,
-    visual_context=attr_data,
-  )
-  if not suggestions:
-    raise HTTPException(
-      status_code=status.HTTP_502_BAD_GATEWAY,
-      detail="LLM suggestions unavailable; please retry shortly.",
+  suggestions = []
+  summary = None
+  target_look = {}
+  if generate_improvements:
+    logger.info("score_with_ai stage=suggestions_start")
+    suggestions, summary, target_look = await generate_suggestions(
+      breakdown,
+      user_ctx,
+      image_bytes,
+      image_url,
+      visual_context=attr_data,
     )
-  logger.info("score_with_ai stage=suggestions_done count={}", len(suggestions))
+    if not suggestions:
+      raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="LLM suggestions unavailable; please retry shortly.",
+      )
+    logger.info("score_with_ai stage=suggestions_done count={}", len(suggestions))
 
   # No suggestions fallback; any errors would have raised above
 
@@ -978,7 +982,7 @@ async def score_with_ai(
   confidence_score = (
     min(1, keypoints / 33)
     + top_sim
-    + (1 if suggestions else 0)
+    + (1 if suggestions or not generate_improvements else 0)
   ) / 3
 
   logger.info(

@@ -109,7 +109,10 @@ async def score_outfit(
 
   logger.info("score_outfit stage=ai_start outfit_id=%s user_id=%s", outfit.id, user_id)
   try:
-    score = await score_with_ai(image_bytes, user_ctx, outfit.image_url)
+    score = await score_with_ai(
+      image_bytes, user_ctx, outfit.image_url,
+      generate_improvements=evolution_context is None,
+    )
   except HTTPException as exc:
     logger.warning(
       "score_outfit stage=ai_rejected outfit_id=%s status=%s detail=%s",
@@ -143,6 +146,13 @@ async def score_outfit(
       max(0.0, min(0.6, float(item.get("severity", 0))))
       for item in new_issues_raw if isinstance(item, dict)
     )
+    deviation = comparison.get("overall_deviation") or {}
+    if isinstance(deviation, dict):
+      issue_severity += max(0.0, min(1.0, float(deviation.get("severity", 0))))
+      deviation_evidence = str(deviation.get("evidence") or "").strip()
+      if deviation_evidence and deviation.get("level") in {"moderate", "major"}:
+        new_issues.append(deviation_evidence)
+    issue_severity = min(1.5, issue_severity)
     previous_score = float(session.current_score)
     revised_score = calculate_revision_score(
       float(session.original_score), previous_score, float(session.potential_score),

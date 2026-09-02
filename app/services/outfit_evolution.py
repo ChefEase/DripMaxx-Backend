@@ -198,10 +198,16 @@ async def compare_revision(
     "minor image quality, or partial occlusion. Compare clothing type, color, fit, silhouette, footwear, "
     "accessories, layering, proportions, and styling. Do not claim completion without visible evidence. "
     "A recommendation can be completed, partial, remaining, or regressed. If uncertain, use remaining or partial "
-    "with lower confidence. Identify genuinely new styling issues, not photography issues. Output JSON only:\n"
+    "with lower confidence. Mark a recommendation regressed when the user visibly chose the opposite of its target "
+    "or made that aspect meaningfully worse (for example tight pants after a straight-leg recommendation). "
+    "Also judge overall semantic deviation. A costume-like, severely clashing, or unrelated replacement can lower "
+    "the rating even when it was not named in the original recommendations. Be measured: ordinary experimentation "
+    "is not a major deviation, and never infer deviation from photography, body shape, or identity. Identify only "
+    "visible styling issues and explain them without insulting the user. Output JSON only:\n"
     '{"recommendations":[{"id":"exact supplied id","status":"completed|partial|remaining|regressed",'
     '"confidence":0.0,"evidence":"specific visible evidence"}],'
     '"new_issues":[{"description":"issue","severity":0.0}],'
+    '"overall_deviation":{"level":"none|minor|moderate|major","severity":0.0,"evidence":"visible styling evidence"},'
     '"summary":"encouraging factual comparison","confidence":0.0}\n'
     f"Original score: {original_score}; potential score: {potential_score}.\n"
     f"Original visual analysis: {json.dumps(original_analysis, ensure_ascii=True)}\n"
@@ -261,6 +267,15 @@ async def compare_revision(
     normalized.append({"id": rec_id, "status": "remaining", "confidence": 0.0, "evidence": "Not clearly verifiable from the current photo."})
   data["recommendations"] = normalized
   data["confidence"] = max(0.0, min(1.0, float(data.get("confidence", 0))))
+  deviation = data.get("overall_deviation")
+  if not isinstance(deviation, dict):
+    deviation = {"level": "none", "severity": 0.0, "evidence": ""}
+  level = str(deviation.get("level", "none")).lower()
+  data["overall_deviation"] = {
+    "level": level if level in {"none", "minor", "moderate", "major"} else "none",
+    "severity": max(0.0, min(1.0, float(deviation.get("severity", 0)))),
+    "evidence": str(deviation.get("evidence") or ""),
+  }
   return data
 
 
