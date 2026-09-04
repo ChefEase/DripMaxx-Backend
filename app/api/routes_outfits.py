@@ -312,10 +312,9 @@ async def get_outfit_evolution(
   auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
-  # A photo may contain a face. Explicit consent is required before any upload
-  # is made available to Replicate; no face recognition or embeddings are used.
-  if not ai_processing_consent:
-    raise HTTPException(status_code=400, detail="Consent to Replicate AI processing is required.")
+  # Reading an existing saved plan does not invoke Replicate. Ownership is
+  # enforced by load_evolution, and image references are returned as short-lived
+  # signed URLs solely so the authenticated user can view their own journey.
   return serialize_evolution(*(await load_evolution(db, session_id, auth.app_user_id)))
 
 
