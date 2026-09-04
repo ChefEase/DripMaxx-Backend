@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
 from app.models import FeatureSubmission, Outfit, OutfitScore, User
+from app.services.storage import create_signed_image_url
 from app.schemas.features import (
   FeatureSubmissionListResponse,
   FeatureSubmissionResponse,
@@ -79,7 +80,7 @@ async def list_feature_submissions(
         id=row[0].id,
         outfit_id=row[0].outfit_id,
         user_id=row[0].user_id,
-        image_url=row[1],
+        image_url=create_signed_image_url(row[1]),
         drip_score=float(row[2]),
         account_email=row[3],
         account_username=row[4],

@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import JSONB
 
-from app.core.auth import AuthContext, optional_auth
+from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
 from app.models import User, UserBadge, UserProfile, Outfit, OutfitScore, RankingGroupMember
+from app.services.storage import create_signed_image_url
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 logger = logging.getLogger(__name__)
@@ -52,14 +53,14 @@ def _eligible_users_subquery(
 async def get_public_profile(
   user_id: str,
   viewer_user_id: str | None = None,
-  auth: AuthContext | None = Depends(optional_auth),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
   """Get a user's public profile for leaderboard view. Returns rank, avg score, top 5 outfits (if visibility allows)."""
   logger.info("get_public_profile user_id=%s", user_id)
-  if auth and viewer_user_id and viewer_user_id != auth.app_user_id:
+  if viewer_user_id and viewer_user_id != auth.app_user_id:
     raise HTTPException(status_code=403, detail="viewer_user_id does not match authenticated user")
-  viewer_user_id = auth.app_user_id if auth else None
+  viewer_user_id = auth.app_user_id
   try:
     user_stmt = select(User.id, User.username, User.display_name, User.avatar_url).where(User.id == user_id)
     user_res = await db.execute(user_stmt)
@@ -170,7 +171,7 @@ async def get_public_profile(
   result["top_outfits"] = [
     {
       "id": str(r.id),
-      "image_url": r.image_url,
+      "image_url": create_signed_image_url(r.image_url),
       "scanned_at": r.scanned_at.isoformat() if r.scanned_at else None,
       "drip_score": round(float(r.drip_score), 2) if r.drip_score else None,
     }

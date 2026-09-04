@@ -521,6 +521,7 @@ async def _vlm_attributes(
 
   sys_prompt = (
     "Rules (follow strictly):\n"
+    "- Do not identify the person, compare facial identity, infer sensitive traits, or produce face/biometric embeddings. Ignore facial details; analyze the outfit only.\n"
     "- If no clear outfit is visible, set outfit_present=false and leave clothing fields empty.\n"
     "- If multiple people are visible, choose ONE main subject: the clearest full-outfit person closest to the center. Rate only that person's outfit and ignore everyone else.\n"
     "- Do not reject an image only because multiple people are visible.\n"

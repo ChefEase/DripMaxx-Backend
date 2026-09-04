@@ -1,5 +1,3 @@
-from urllib.parse import urlparse
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from datetime import datetime, timedelta, timezone
 
@@ -12,7 +10,8 @@ from supabase import create_client as create_supabase_client
 from app.core.config import get_settings
 from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
-from app.models.entities import User, UserProfile, Outfit, OutfitScore, DripScoreHistory, StyleDNA
+from app.models.entities import User, UserProfile, Outfit, OutfitScore, DripScoreHistory, StyleDNA, OutfitEvolutionSession
+from app.services.storage import create_signed_image_url, delete_storage_objects
 from app.schemas.profile import (
   DeleteAccountRequest,
   DeleteAccountResponse,
@@ -80,33 +79,6 @@ def _choice_value(value: str) -> bool | str:
   if value == "undecided":
     return "undecided"
   return value == "true"
-
-
-def _storage_path_from_url(image_url: str | None, bucket: str) -> str | None:
-  if not image_url or image_url.startswith("uploaded://"):
-    return None
-  try:
-    parsed = urlparse(image_url)
-    marker = f"/storage/v1/object/public/{bucket}/"
-    if marker in parsed.path:
-      return parsed.path.split(marker, 1)[1]
-  except Exception:
-    return None
-  return None
-
-
-def _delete_storage_objects(paths: list[str]) -> None:
-  if not paths or not settings.supabase_url or not settings.supabase_service_key:
-    return
-  client = create_supabase_client(settings.supabase_url, settings.supabase_service_key)
-  bucket = settings.supabase_bucket or "outfits"
-  unique_paths = list(dict.fromkeys([p for p in paths if p]))
-  for idx in range(0, len(unique_paths), 100):
-    batch = unique_paths[idx : idx + 100]
-    try:
-      client.storage.from_(bucket).remove(batch)
-    except Exception as exc:
-      logger.warning(f"Supabase storage delete failed for batch size={len(batch)}: {exc}")
 
 
 async def _get_or_create_user(
@@ -270,19 +242,14 @@ async def delete_account(
   if not user:
     raise HTTPException(status_code=404, detail="User not found")
 
-  bucket = settings.supabase_bucket or "outfits"
-  outfit_stmt = select(Outfit.image_url).where(Outfit.user_id == user_id)
-  outfit_res = await db.execute(outfit_stmt)
-  storage_paths = [
-    path
-    for path in (
-      _storage_path_from_url(str(row[0]) if row[0] is not None else None, bucket)
-      for row in outfit_res.fetchall()
-    )
-    if path
-  ]
-
-  _delete_storage_objects(storage_paths)
+  outfit_refs = list((await db.execute(
+    select(Outfit.image_url).where(Outfit.user_id == user_id)
+  )).scalars().all())
+  target_refs = list((await db.execute(
+    select(OutfitEvolutionSession.target_image_url).where(OutfitEvolutionSession.user_id == user_id)
+  )).scalars().all())
+  # Delete every original, revision, and generated target before cascading rows.
+  delete_storage_objects([*outfit_refs, *target_refs])
 
   auth_deleted = False
   if settings.supabase_url and settings.supabase_service_key:
@@ -318,7 +285,7 @@ async def profile_history(
   recent = [
     {
       "id": str(r.id),
-      "image_url": r.image_url,
+      "image_url": create_signed_image_url(r.image_url),
       "scanned_at": r.scanned_at.isoformat() if r.scanned_at else None,
       "drip_score": float(r.drip_score) if r.drip_score is not None else None,
     }
@@ -337,7 +304,7 @@ async def profile_history(
   best_outfit = (
     {
       "id": str(best_row.id),
-      "image_url": best_row.image_url,
+      "image_url": create_signed_image_url(best_row.image_url),
       "scanned_at": best_row.scanned_at.isoformat() if best_row.scanned_at else None,
       "drip_score": float(best_row.drip_score) if best_row.drip_score is not None else None,
     }
@@ -381,7 +348,7 @@ async def profile_history(
   score_cards = [
     {
       "outfit_id": str(r.id),
-      "image_url": r.image_url,
+      "image_url": create_signed_image_url(r.image_url),
       "scanned_at": r.scanned_at.isoformat() if r.scanned_at else None,
       "drip_score": float(r.drip_score) if r.drip_score is not None else None,
       "breakdown": {

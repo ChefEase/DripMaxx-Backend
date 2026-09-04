@@ -1,15 +1,17 @@
 import json
 import logging
+import io
 
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile, Depends, HTTPException, status, Form
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from PIL import Image as PILImage, UnidentifiedImageError
 
 from app.core.auth import AuthContext, require_auth
 from app.schemas.outfits import ScoreResponse, UserContext
 from app.db.session import get_db
 from app.services.ai_scoring import score_with_ai
-from app.services.storage import upload_outfit_image
+from app.services.storage import AI_SIGNED_URL_TTL_SECONDS, create_signed_image_url, delete_storage_objects, upload_outfit_image
 from app.models import (
   Outfit, OutfitScore, OutfitSuggestion, SuggestionTypeEnum, DripScoreHistory,
   OutfitEvolutionSession, OutfitEvolutionRecommendation, OutfitEvolutionRevision,
@@ -23,6 +25,8 @@ from app.services.rewards import SCAN_XP, award_xp_once, consume_scan_credit_if_
 
 router = APIRouter(prefix="/v1/outfits", tags=["outfits"])
 logger = logging.getLogger(__name__)
+MAX_OUTFIT_IMAGE_BYTES = 12 * 1024 * 1024
+ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 
 @router.post(
@@ -35,6 +39,7 @@ async def score_outfit(
   image: UploadFile = File(...),
   user_context: str = Form(..., description="JSON of user context"),
   evolution_session_id: str | None = Form(default=None),
+  ai_processing_consent: bool = Form(default=False),
   auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
@@ -81,6 +86,18 @@ async def score_outfit(
   image_bytes = await image.read()
   if not image_bytes:
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image upload is empty.")
+  if len(image_bytes) > MAX_OUTFIT_IMAGE_BYTES:
+    raise HTTPException(status_code=413, detail="Image is too large. Maximum upload size is 12 MB.")
+  try:
+    with PILImage.open(io.BytesIO(image_bytes)) as decoded:
+      detected_format = str(decoded.format or "").upper()
+      if decoded.width * decoded.height > 40_000_000:
+        raise HTTPException(status_code=413, detail="Image dimensions are too large.")
+      decoded.verify()
+  except (UnidentifiedImageError, OSError, ValueError) as exc:
+    raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.") from exc
+  if detected_format not in ALLOWED_IMAGE_FORMATS:
+    raise HTTPException(status_code=415, detail="Only JPEG, PNG, and WebP outfit images are supported.")
 
   # Persist outfit first to get outfit_id, then upload image
   style_tags = list(user_ctx.style_preferences) if user_ctx.style_preferences else []
@@ -96,7 +113,7 @@ async def score_outfit(
   await db.flush()
 
   # Upload image to Supabase Storage (before AI so AI can use URL)
-  content_type = image.content_type or "image/jpeg"
+  content_type = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[detected_format]
   image_url = upload_outfit_image(image_bytes, outfit.id, user_id, content_type)
   if image_url:
     outfit.image_url = image_url
@@ -109,11 +126,15 @@ async def score_outfit(
 
   logger.info("score_outfit stage=ai_start outfit_id=%s user_id=%s", outfit.id, user_id)
   try:
+    ai_image_url = create_signed_image_url(outfit.image_url, AI_SIGNED_URL_TTL_SECONDS)
+    if not ai_image_url:
+      raise HTTPException(status_code=503, detail="Temporary AI image access could not be created.")
     score = await score_with_ai(
-      image_bytes, user_ctx, outfit.image_url,
+      image_bytes, user_ctx, ai_image_url,
       generate_improvements=evolution_context is None,
     )
   except HTTPException as exc:
+    delete_storage_objects([outfit.image_url])
     logger.warning(
       "score_outfit stage=ai_rejected outfit_id=%s status=%s detail=%s",
       outfit.id,
@@ -122,6 +143,7 @@ async def score_outfit(
     )
     raise
   except Exception:
+    delete_storage_objects([outfit.image_url])
     logger.exception("score_outfit stage=ai_failed outfit_id=%s", outfit.id)
     raise HTTPException(
       status_code=status.HTTP_502_BAD_GATEWAY,
@@ -131,11 +153,19 @@ async def score_outfit(
 
   if evolution_context:
     session, original_outfit, evolution_recommendations, prior_revisions = evolution_context
-    comparison = await compare_revision(
-      original_outfit.image_url, outfit.image_url, float(session.original_score),
-      float(session.potential_score), session.original_analysis or {},
-      evolution_recommendations, prior_revisions,
-    )
+    try:
+      original_ai_url = create_signed_image_url(original_outfit.image_url, AI_SIGNED_URL_TTL_SECONDS)
+      current_ai_url = create_signed_image_url(outfit.image_url, AI_SIGNED_URL_TTL_SECONDS)
+      if not original_ai_url or not current_ai_url:
+        raise HTTPException(status_code=503, detail="Temporary revision-image access could not be created.")
+      comparison = await compare_revision(
+        original_ai_url, current_ai_url, float(session.original_score),
+        float(session.potential_score), session.original_analysis or {},
+        evolution_recommendations, prior_revisions,
+      )
+    except Exception:
+      delete_storage_objects([outfit.image_url])
+      raise
     new_issues_raw = comparison.get("new_issues") or []
     new_issues = [
       str(item.get("description") or "").strip() if isinstance(item, dict) else str(item).strip()
@@ -259,7 +289,12 @@ async def score_outfit(
   await consume_scan_credit_if_needed(db, user_id, quota)
   xp_awarded = SCAN_XP if await award_xp_once(db, user_id, SCAN_XP, "outfit_scan", outfit.id, "Every outfit scan") else 0
 
-  await db.commit()
+  try:
+    await db.commit()
+  except Exception:
+    # Storage is outside the SQL transaction, so compensate on database failure.
+    delete_storage_objects([outfit.image_url])
+    raise
   await db.refresh(outfit)
   if should_generate_target:
     background_tasks.add_task(generate_target_image, str(session.id))
@@ -277,6 +312,10 @@ async def get_outfit_evolution(
   auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
+  # A photo may contain a face. Explicit consent is required before any upload
+  # is made available to Replicate; no face recognition or embeddings are used.
+  if not ai_processing_consent:
+    raise HTTPException(status_code=400, detail="Consent to Replicate AI processing is required.")
   return serialize_evolution(*(await load_evolution(db, session_id, auth.app_user_id)))
 
 

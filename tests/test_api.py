@@ -13,6 +13,6 @@ def test_health_ok():
 
 
 def test_score_requires_image_and_context():
-  # Missing required multipart image -> FastAPI validation should reject with 422
+  # Authentication is checked before accepting any image-bearing request.
   resp = client.post("/v1/outfits/score")
-  assert resp.status_code == 422
+  assert resp.status_code == 401

@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import AuthContext, optional_auth, require_auth
+from app.core.auth import AuthContext, require_auth
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models import (
@@ -37,6 +37,7 @@ from app.services.rewards import (
   add_scan_credits,
   award_xp_once,
 )
+from app.services.storage import create_signed_image_url
 
 router = APIRouter(prefix="/v1/challenges", tags=["challenges"])
 
@@ -203,7 +204,10 @@ async def _finalize_ranked_challenge(db: AsyncSession, challenge: Challenge, sub
 
 
 @router.get("/active", response_model=ActiveChallengeResponse)
-async def get_active_challenge(db: AsyncSession = Depends(get_db)):
+async def get_active_challenge(
+  _auth: AuthContext = Depends(require_auth),
+  db: AsyncSession = Depends(get_db),
+):
   now = _now()
   announcement_res = await db.execute(
     select(Announcement)
@@ -234,6 +238,8 @@ async def submit_to_active_challenge(
   auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
+  if not payload.display_consent:
+    raise HTTPException(status_code=400, detail="Permission to display the outfit is required")
   challenge = await _get_active_challenge(db)
   if not challenge:
     raise HTTPException(status_code=404, detail="No active challenge")
@@ -375,7 +381,7 @@ async def set_admin_top_three(
 @router.get("/{challenge_id}/results", response_model=ChallengeResultsResponse)
 async def get_challenge_results(
   challenge_id: str,
-  auth: AuthContext | None = Depends(optional_auth),
+  auth: AuthContext = Depends(require_auth),
   db: AsyncSession = Depends(get_db),
 ):
   challenge_res = await db.execute(select(Challenge).where(Challenge.id == challenge_id))
@@ -399,7 +405,7 @@ async def get_challenge_results(
       challenge_id=row[0].challenge_id,
       user_id=row[0].user_id,
       outfit_id=row[0].outfit_id,
-      image_url=row[1],
+      image_url=create_signed_image_url(row[1]),
       display_name=row[2] or row[3] or "User",
       admin_rank=row[0].admin_rank,
       admin_points=float(row[0].admin_points or 0),
@@ -410,14 +416,13 @@ async def get_challenge_results(
     for row in res.fetchall()
   ]
   viewer_vote_submission_id = None
-  if auth:
-    vote_res = await db.execute(
-      select(ChallengeVote.submission_id).where(
-        ChallengeVote.challenge_id == challenge_id,
-        ChallengeVote.user_id == auth.app_user_id,
-      )
+  vote_res = await db.execute(
+    select(ChallengeVote.submission_id).where(
+      ChallengeVote.challenge_id == challenge_id,
+      ChallengeVote.user_id == auth.app_user_id,
     )
-    viewer_vote_submission_id = vote_res.scalar_one_or_none()
+  )
+  viewer_vote_submission_id = vote_res.scalar_one_or_none()
   return ChallengeResultsResponse(
     challenge_id=challenge_id,
     winner_submission_id=challenge.winner_submission_id,

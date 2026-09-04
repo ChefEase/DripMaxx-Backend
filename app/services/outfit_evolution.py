@@ -25,7 +25,7 @@ from app.schemas.outfits import (
   ScoreResponse,
   SuggestionCard,
 )
-from app.services.storage import upload_target_image
+from app.services.storage import AI_SIGNED_URL_TTL_SECONDS, create_signed_image_url, upload_target_image
 
 settings = get_settings()
 VALID_STATUSES = {"completed", "partial", "remaining", "regressed"}
@@ -54,21 +54,24 @@ async def generate_target_image(session_id: str) -> None:
       "applying only the supplied DripMaxx recommendations. Preserve identity, face, skin tone, hairstyle, body "
       "shape, pose, camera angle, environment, and every garment or accessory not explicitly changed. Preserve "
       "the original aesthetic. Do not add random accessories, substitute unrelated wardrobe items, beautify the "
-      "person, or change their body. Maintain realistic fabric, fit, and clothing proportions. This is a visual "
+      "person, analyze or identify their face, or change their body. Facial appearance is only incidental context "
+      "to keep the edited photo visually consistent. Maintain realistic fabric, fit, and clothing proportions. This is a visual "
       "reference, not a new fashion-model outfit. Target-look specification:\n"
       f"{json.dumps(session.target_look or {}, ensure_ascii=True)}"
     )
 
     def _generate() -> bytes:
+      original_signed_url = create_signed_image_url(original.image_url, AI_SIGNED_URL_TTL_SECONDS)
+      if not original_signed_url:
+        raise RuntimeError("Temporary original-image access could not be created")
       client = replicate.Client(api_token=settings.replicate_api_token, timeout=180)
       output = client.run(settings.replicate_image_model, input={
         "prompt": prompt,
-        "input_images": [original.image_url],
+        "input_images": [original_signed_url],
         "aspect_ratio": "2:3",
         "quality": "medium",
         "number_of_images": 1,
         "output_format": "webp",
-        "user_id": str(session.user_id),
       })
       item = output[0] if isinstance(output, (list, tuple)) else output
       if hasattr(item, "read"):
@@ -196,7 +199,8 @@ async def compare_revision(
     "Image 1 is ORIGINAL and image 2 is CURRENT. Do not evaluate the current photo as an unrelated outfit. "
     "Ignore differences caused only by pose, lighting, distance, camera angle, background, shadows, wrinkles, "
     "minor image quality, or partial occlusion. Compare clothing type, color, fit, silhouette, footwear, "
-    "accessories, layering, proportions, and styling. Do not claim completion without visible evidence. "
+    "accessories, layering, proportions, and styling. Do not identify either person, compare facial identity, "
+    "or infer whether the faces belong to the same person. Do not claim completion without visible evidence. "
     "A recommendation can be completed, partial, remaining, or regressed. If uncertain, use remaining or partial "
     "with lower confidence. Mark a recommendation regressed when the user visibly chose the opposite of its target "
     "or made that aspect meaningfully worse (for example tight pants after a straight-leg recommendation). "
@@ -324,9 +328,9 @@ def serialize_evolution(
   ) for rec in recommendations]
   return EvolutionSessionResponse(
     session_id=str(session.id), original_outfit_id=str(session.original_outfit_id),
-    original_image_url=original.image_url, original_score=float(session.original_score),
+    original_image_url=create_signed_image_url(original.image_url), original_score=float(session.original_score),
     current_score=float(session.current_score), potential_score=float(session.potential_score),
-    target_image_url=session.target_image_url,
+    target_image_url=create_signed_image_url(session.target_image_url),
     target_generation_status=session.target_generation_status or "pending",
     target_generation_error=session.target_generation_error,
     recommendations=cards,

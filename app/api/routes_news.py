@@ -9,8 +9,24 @@ from app.core.auth import AuthContext, require_auth
 from app.db.session import get_db
 from app.models import CommunityNews, CommunityNewsDismissal, CommunityNewsLike, UserProfile
 from app.schemas.news import CommunityNewsFeedResponse, CommunityNewsLikeResponse, CommunityNewsResponse
+from app.services.storage import create_signed_image_url
 
 router = APIRouter(prefix="/v1/news", tags=["community-news"])
+
+
+def _signed_news_content(content: dict) -> dict:
+  """Replace persisted private object references only at an authenticated boundary."""
+  result = dict(content or {})
+  for key in ("before_image_url", "after_image_url"):
+    if result.get(key):
+      result[key] = create_signed_image_url(result[key])
+  if isinstance(result.get("placements"), list):
+    result["placements"] = [
+      {**item, "image_url": create_signed_image_url(item.get("image_url"))}
+      if isinstance(item, dict) and item.get("image_url") else item
+      for item in result["placements"]
+    ]
+  return result
 
 
 @router.get("/feed", response_model=CommunityNewsFeedResponse)
@@ -67,8 +83,8 @@ async def get_news_feed(
         eyebrow=row.eyebrow,
         title=row.title,
         caption=row.caption,
-        image_url=row.image_url,
-        content=row.content or {},
+        image_url=create_signed_image_url(row.image_url),
+        content=_signed_news_content(row.content or {}),
         published_at=row.published_at,
         liked=row.id in liked_ids,
         like_count=like_counts.get(row.id, 0),

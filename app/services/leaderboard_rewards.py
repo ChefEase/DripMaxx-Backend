@@ -161,10 +161,13 @@ async def _create_podium_news(
   winner_id = standings[0].user_id
   winner_outfit = (
     await db.execute(
-      select(Outfit.image_url, OutfitScore)
+      select(OutfitScore)
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .join(UserProfile, UserProfile.user_id == Outfit.user_id)
       .where(
         Outfit.user_id == winner_id,
+        UserProfile.community_feed_choice == "true",
+        UserProfile.profile_visibility_mode == "public",
         OutfitScore.created_at >= start,
         OutfitScore.created_at < end,
       )
@@ -172,10 +175,9 @@ async def _create_podium_news(
       .limit(1)
     )
   ).first()
-  image_url = winner_outfit[0] if winner_outfit else None
   strengths: list[str] = []
   if winner_outfit:
-    score = winner_outfit[1]
+    score = winner_outfit[0]
     metrics = [
       ("Color coordination", score.color_match),
       ("Strong fit", score.fit_quality),
@@ -215,7 +217,9 @@ async def _create_podium_news(
       eyebrow="🔥 COMMUNITY FIT",
       title=title,
       caption=caption,
-      image_url=image_url,
+      # Leaderboard participation is not consent to publish a face-containing
+      # outfit photo. Keep automatic podium news text-only.
+      image_url=None,
       content={"podium": podium, "strengths": strengths},
       published_at=end,
       expires_at=end + lifetime,
@@ -236,10 +240,13 @@ async def _create_glow_up_news(
     return
   rows = (
     await db.execute(
-      select(Outfit.user_id, Outfit.image_url, OutfitScore.drip_score, OutfitScore.created_at)
+      select(Outfit.user_id, OutfitScore.drip_score, OutfitScore.created_at)
       .join(OutfitScore, OutfitScore.outfit_id == Outfit.id)
+      .join(UserProfile, UserProfile.user_id == Outfit.user_id)
       .where(
         Outfit.user_id.isnot(None),
+        UserProfile.community_feed_choice == "true",
+        UserProfile.profile_visibility_mode == "public",
         OutfitScore.created_at >= start,
         OutfitScore.created_at < end,
       )
@@ -279,11 +286,10 @@ async def _create_glow_up_news(
         f"Improvement: +{round(improvement * 10)} points\n\n"
         "Consistency changed the score. Keep scanning, learning, and leveling up.\n\n#DripMaxx"
       ),
-      image_url=after.image_url,
+      # Glow-up awards are automatic, so do not expose either outfit image.
+      image_url=None,
       content={
         "username": username,
-        "before_image_url": before.image_url,
-        "after_image_url": after.image_url,
         "before_score": before_score,
         "after_score": after_score,
         "improvement": round(improvement * 10),

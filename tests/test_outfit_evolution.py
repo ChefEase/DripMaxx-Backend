@@ -67,7 +67,6 @@ def test_major_off_target_change_lowers_score_without_crushing_it():
 
 
 def test_default_models_use_terra_and_gpt_image_2():
-  settings = Settings(_env_file=None)
-  assert settings.replicate_llm_model == "openai/gpt-5.6-terra"
-  assert settings.replicate_vlm_model == "openai/gpt-5.6-terra"
-  assert settings.replicate_image_model == "openai/gpt-image-2"
+  assert Settings.model_fields["replicate_llm_model"].default == "openai/gpt-5.6-terra"
+  assert Settings.model_fields["replicate_vlm_model"].default == "openai/gpt-5.6-terra"
+  assert Settings.model_fields["replicate_image_model"].default == "openai/gpt-image-2"
